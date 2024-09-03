@@ -80,12 +80,12 @@ jobs:
       - name: Make a 'dist' folder
         run: mkdir dist
 
-      - uses: actions/download-artifact@v2
+      - uses: actions/download-artifact@v4.1.7
         with:
           name: macos-wheels
           path: ./dist
 
-      - uses: actions/download-artifact@v2
+      - uses: actions/download-artifact@v4.1.7
         with:
           name: ubuntu-wheels
           path: ./dist
