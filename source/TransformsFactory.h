@@ -10,6 +10,10 @@
 #include <ConcurrentContainers.h>
 
 #include <mariana-trench/Context.h>
+#include <mariana-trench/Kind.h>
+#include <mariana-trench/NamedTransform.h>
+#include <mariana-trench/SanitizerSetTransform.h>
+#include <mariana-trench/SourceAsTransform.h>
 #include <mariana-trench/TransformList.h>
 #include <mariana-trench/UniquePointerFactory.h>
 
@@ -35,7 +39,12 @@ class TransformsFactory final {
     return transform_lists_.size();
   }
 
-  const Transform* create_transform(const std::string& name) const;
+  const NamedTransform* create_transform(const std::string& name) const;
+
+  const SourceAsTransform* create_source_as_transform(const Kind* kind) const;
+
+  const SanitizerSetTransform* create_sanitizer_set_transform(
+      const SanitizerSetTransform::Set& kinds) const;
 
   // Use for testing only
   const TransformList* create(
@@ -48,6 +57,8 @@ class TransformsFactory final {
       TransformList::ConstIterator begin,
       TransformList::ConstIterator end) const;
 
+  const TransformList* create(std::vector<const Transform*> transforms) const;
+
   const TransformList* concat(
       const TransformList* MT_NULLABLE local_transforms,
       const TransformList* MT_NULLABLE global_transforms) const;
@@ -55,12 +66,27 @@ class TransformsFactory final {
   const TransformList* MT_NULLABLE
   reverse(const TransformList* MT_NULLABLE transforms) const;
 
+  const TransformList* MT_NULLABLE
+  get_source_as_transform(const Kind* kind) const;
+
   TransformCombinations all_combinations(const TransformList* transforms) const;
 
   static const TransformsFactory& singleton();
 
+  const TransformList* MT_NULLABLE
+  discard_sanitizers(const TransformList* MT_NULLABLE transforms) const;
+
+  const TransformList* MT_NULLABLE
+  canonicalize(const TransformList* MT_NULLABLE transforms) const;
+
  private:
-  UniquePointerFactory<std::string, Transform> transform_;
+  UniquePointerFactory<std::string, NamedTransform> transform_;
+  UniquePointerFactory<const Kind*, SourceAsTransform> source_as_transform_;
+  UniquePointerFactory<
+      SanitizerSetTransform::Set,
+      SanitizerSetTransform,
+      SanitizerSetTransform::SetHash>
+      sanitize_transform_set_;
   mutable InsertOnlyConcurrentSet<TransformList> transform_lists_;
 };
 

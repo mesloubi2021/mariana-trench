@@ -5,10 +5,28 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <algorithm>
+
 #include <mariana-trench/FeatureFactory.h>
 #include <mariana-trench/TaintTree.h>
 
 namespace marianatrench {
+
+namespace {
+
+std::optional<std::size_t> calculate_override(
+    const TaintTreeConfigurationOverrides& global_config_overrides,
+    const TaintTreeConfigurationOverrides& config_overrides,
+    TaintTreeConfigurationOverrideOptions option) {
+  if (global_config_overrides.is_bottom() && config_overrides.is_bottom()) {
+    return std::nullopt;
+  }
+
+  return static_cast<std::size_t>(std::max(
+      global_config_overrides.get(option), config_overrides.get(option)));
+}
+
+} // namespace
 
 Taint TaintTreeConfiguration::transform_on_widening_collapse(Taint taint) {
   // Add the feature as a may-feature, otherwise we would break the widening
@@ -21,12 +39,66 @@ Taint TaintTreeConfiguration::transform_on_widening_collapse(Taint taint) {
   return taint;
 }
 
+bool TaintTree::is_bottom() const {
+  return tree_.is_bottom() && overrides_.is_bottom();
+}
+
+bool TaintTree::is_top() const {
+  return tree_.is_top() && overrides_.is_top();
+}
+
+bool TaintTree::leq(const TaintTree& other) const {
+  return tree_.leq(other.tree_) && overrides_.leq(other.overrides_);
+}
+
+bool TaintTree::equals(const TaintTree& other) const {
+  return tree_.equals(other.tree_) && overrides_.equals(other.overrides_);
+}
+
+void TaintTree::set_to_bottom() {
+  tree_.set_to_bottom();
+  overrides_.set_to_bottom();
+}
+
+void TaintTree::set_to_top() {
+  tree_.set_to_top();
+  overrides_.set_to_top();
+}
+
+void TaintTree::join_with(const TaintTree& other) {
+  mt_if_expensive_assert(auto previous = *this);
+
+  tree_.join_with(other.tree_);
+  overrides_.join_with(other.overrides_);
+
+  mt_expensive_assert(previous.leq(*this) && other.leq(*this));
+}
+
+void TaintTree::widen_with(const TaintTree& other) {
+  mt_if_expensive_assert(auto previous = *this);
+
+  tree_.widen_with(other.tree_);
+  overrides_.widen_with(other.overrides_);
+
+  mt_expensive_assert(previous.leq(*this) && other.leq(*this));
+}
+
+void TaintTree::meet_with(const TaintTree& other) {
+  tree_.meet_with(other.tree_);
+  overrides_.meet_with(other.overrides_);
+}
+
+void TaintTree::narrow_with(const TaintTree& other) {
+  tree_.narrow_with(other.tree_);
+  overrides_.narrow_with(other.overrides_);
+}
+
 TaintTree TaintTree::read(const Path& path) const {
-  return TaintTree(tree_.read(path));
+  return TaintTree(tree_.read(path), overrides_);
 }
 
 TaintTree TaintTree::raw_read(const Path& path) const {
-  return TaintTree(tree_.raw_read(path));
+  return TaintTree(tree_.raw_read(path), overrides_);
 }
 
 void TaintTree::write(const Path& path, Taint taint, UpdateKind kind) {
@@ -35,6 +107,15 @@ void TaintTree::write(const Path& path, Taint taint, UpdateKind kind) {
 
 void TaintTree::write(const Path& path, TaintTree tree, UpdateKind kind) {
   tree_.write(path, std::move(tree.tree_), kind);
+  switch (kind) {
+    case UpdateKind::Strong: {
+      overrides_ = tree.overrides_;
+    } break;
+
+    case UpdateKind::Weak: {
+      overrides_.join_with(std::move(tree.overrides_));
+    } break;
+  }
 }
 
 std::vector<std::pair<Path, const Taint&>> TaintTree::elements() const {
@@ -87,6 +168,10 @@ Taint TaintTree::collapse(
   });
 }
 
+Taint TaintTree::collapse() const {
+  return tree_.collapse();
+}
+
 void TaintTree::collapse_deeper_than(
     std::size_t height,
     const FeatureMayAlwaysSet& broadening_features) {
@@ -98,8 +183,33 @@ void TaintTree::collapse_deeper_than(
 }
 
 void TaintTree::limit_leaves(
-    std::size_t max_leaves,
+    std::size_t default_max_leaves,
     const FeatureMayAlwaysSet& broadening_features) {
+  limit_leaves(
+      default_max_leaves,
+      TaintTreeConfigurationOverrides::bottom(),
+      broadening_features);
+}
+
+void TaintTree::limit_leaves(
+    std::size_t default_max_leaves,
+    const TaintTreeConfigurationOverrides& global_config_overrides,
+    const FeatureMayAlwaysSet& broadening_features) {
+  // Select the override to use (if any)
+  auto override_max_leaves = calculate_override(
+      global_config_overrides,
+      overrides_,
+      TaintTreeConfigurationOverrideOptions::MaxModelWidth);
+  auto max_leaves =
+      override_max_leaves ? *override_max_leaves : default_max_leaves;
+
+  // Update the override options if it is different from the default heuristic.
+  if (max_leaves != default_max_leaves) {
+    overrides_.add(
+        TaintTreeConfigurationOverrideOptions::MaxModelWidth, max_leaves);
+  }
+
+  // Limit the number of leaves on the tree to the selected max_leaves.
   tree_.limit_leaves(max_leaves, [&broadening_features](Taint taint) {
     taint.add_locally_inferred_features(broadening_features);
     taint.update_maximum_collapse_depth(CollapseDepth::zero());
@@ -114,62 +224,19 @@ void TaintTree::update_maximum_collapse_depth(CollapseDepth collapse_depth) {
   });
 }
 
-void TaintTree::update_with_propagation_trace(const Frame& propagation_frame) {
-  mt_assert(propagation_frame.call_kind().is_propagation_with_trace());
-  tree_.transform([&propagation_frame](const Taint& taint) {
-    return taint.update_with_propagation_trace(propagation_frame);
-  });
+void TaintTree::update_with_propagation_trace(
+    const CallInfo& propagation_call_info,
+    const Frame& propagation_frame) {
+  tree_.transform(
+      [&propagation_call_info, &propagation_frame](const Taint& taint) {
+        return taint.update_with_propagation_trace(
+            propagation_call_info, propagation_frame);
+      });
 }
 
-TaintTree TaintAccessPathTree::read(Root root) const {
-  return TaintTree(tree_.read(root));
-}
-
-TaintTree TaintAccessPathTree::read(const AccessPath& access_path) const {
-  return TaintTree(tree_.read(access_path));
-}
-
-TaintTree TaintAccessPathTree::raw_read(const AccessPath& access_path) const {
-  return TaintTree(tree_.raw_read(access_path));
-}
-
-void TaintAccessPathTree::write(
-    const AccessPath& access_path,
-    Taint taint,
-    UpdateKind kind) {
-  tree_.write(access_path, std::move(taint), kind);
-}
-
-void TaintAccessPathTree::write(
-    const AccessPath& access_path,
-    TaintTree tree,
-    UpdateKind kind) {
-  tree_.write(access_path, std::move(tree.tree_), kind);
-}
-
-std::vector<std::pair<AccessPath, const Taint&>> TaintAccessPathTree::elements()
-    const {
-  return tree_.elements();
-}
-
-std::vector<std::pair<Root, TaintTree>> TaintAccessPathTree::roots() const {
-  // Since sizeof(TaintTree) != sizeof(AbstractTreeDomain<Taint>), we cannot
-  // return references to `TaintTree`s.
-  std::vector<std::pair<Root, TaintTree>> results;
-  for (const auto& [root, tree] : tree_) {
-    results.emplace_back(root, TaintTree(tree));
-  }
-  return results;
-}
-
-void TaintAccessPathTree::limit_leaves(
-    std::size_t max_leaves,
-    const FeatureMayAlwaysSet& broadening_features) {
-  tree_.limit_leaves(max_leaves, [&broadening_features](Taint taint) {
-    taint.add_locally_inferred_features(broadening_features);
-    taint.update_maximum_collapse_depth(CollapseDepth::zero());
-    return taint;
-  });
+void TaintTree::apply_config_overrides(
+    const TaintTreeConfigurationOverrides& config_overrides) {
+  overrides_.join_with(config_overrides);
 }
 
 } // namespace marianatrench

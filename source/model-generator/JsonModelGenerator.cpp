@@ -6,6 +6,7 @@
  */
 
 #include <mariana-trench/EventLogger.h>
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/JsonValidation.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/model-generator/JsonModelGenerator.h>
@@ -103,7 +104,7 @@ std::vector<FieldModel> JsonFieldModelGeneratorItem::visit_field(
 JsonModelGenerator::JsonModelGenerator(
     const ModelGeneratorName* name,
     Context& context,
-    const boost::filesystem::path& json_configuration_file,
+    const std::filesystem::path& json_configuration_file,
     const Json::Value& value)
     : ModelGenerator(name, context),
       json_configuration_file_(json_configuration_file) {
@@ -168,18 +169,18 @@ JsonModelGenerator::JsonModelGenerator(
 JsonModelGenerator JsonModelGenerator::from_file(
     const std::string& name,
     Context& context,
-    const boost::filesystem::path& json_configuration_file) {
+    const std::filesystem::path& json_configuration_file) {
   return JsonModelGenerator::from_json(
       context.model_generator_name_factory->create(name),
       context,
       json_configuration_file,
-      JsonValidation::parse_json_file(json_configuration_file));
+      JsonReader::parse_json_file(json_configuration_file));
 }
 
 JsonModelGenerator JsonModelGenerator::from_json(
     const std::string& name,
     Context& context,
-    const boost::filesystem::path& json_configuration_file,
+    const std::filesystem::path& json_configuration_file,
     const Json::Value& json) {
   return JsonModelGenerator::from_json(
       context.model_generator_name_factory->create(name),
@@ -191,7 +192,7 @@ JsonModelGenerator JsonModelGenerator::from_json(
 JsonModelGenerator JsonModelGenerator::from_json(
     const ModelGeneratorName* name,
     Context& context,
-    const boost::filesystem::path& json_configuration_file,
+    const std::filesystem::path& json_configuration_file,
     const Json::Value& json) {
   return JsonModelGenerator(name, context, json_configuration_file, json);
 }
@@ -230,7 +231,10 @@ std::vector<Model> JsonModelGenerator::emit_method_models_optimized(
         show(item.name()),
         method_models.size());
     EventLogger::log_event(
-        "model_generator_match", show(item.name()), method_models.size());
+        "model_generator_match",
+        show(item.name()),
+        method_models.size(),
+        /* verbosity_level */ 3);
 
     models.insert(
         models.end(),

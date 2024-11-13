@@ -24,14 +24,23 @@
           "sinks" :
           [
             {
+              "call_info" :
+              {
+                "call_kind" : "Origin",
+                "port" : "Argument(1)",
+                "position" :
+                {
+                  "line" : 5,
+                  "path" : "Flow.java"
+                }
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Origin",
                   "callee_interval" :
                   [
-                    6,
-                    7
+                    5,
+                    6
                   ],
                   "kind" : "TestSink",
                   "origins" :
@@ -43,36 +52,29 @@
                   ],
                   "preserves_type_context" : true
                 }
-              ],
-              "origin" :
-              {
-                "leaves" :
-                [
-                  {
-                    "method" : "LSink;.sink:(LData;)V",
-                    "port" : "Argument(1)"
-                  }
-                ],
-                "method" : "LSink;.sink:(LData;)V",
-                "position" :
-                {
-                  "line" : 5,
-                  "path" : "Flow.java"
-                }
-              }
+              ]
             }
           ],
           "sources" :
           [
             {
+              "call_info" :
+              {
+                "call_kind" : "Origin",
+                "port" : "Return",
+                "position" :
+                {
+                  "line" : 2,
+                  "path" : "Flow.java"
+                }
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Origin",
                   "callee_interval" :
                   [
-                    6,
-                    7
+                    5,
+                    6
                   ],
                   "kind" : "TestSource",
                   "origins" :
@@ -97,23 +99,7 @@
                 {
                   "line" : 3
                 }
-              ],
-              "origin" :
-              {
-                "leaves" :
-                [
-                  {
-                    "method" : "LSource;.source:()LData;",
-                    "port" : "Return"
-                  }
-                ],
-                "method" : "LSource;.source:()LData;",
-                "position" :
-                {
-                  "line" : 2,
-                  "path" : "Flow.java"
-                }
-              }
+              ]
             }
           ]
         }

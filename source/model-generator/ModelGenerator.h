@@ -23,6 +23,7 @@
 #include <mariana-trench/Model.h>
 #include <mariana-trench/Options.h>
 #include <mariana-trench/Overrides.h>
+#include <mariana-trench/TaggedRootSet.h>
 #include <mariana-trench/TaintConfig.h>
 #include <mariana-trench/model-generator/ModelGeneratorName.h>
 
@@ -181,7 +182,7 @@ std::unordered_set<std::string_view> get_parents_from_class(
     DexClass* dex_class,
     bool include_interfaces);
 std::unordered_set<std::string_view> get_custom_parents_from_class(
-    DexClass* dex_class);
+    const DexClass* dex_class);
 std::string get_outer_class(std::string_view classname);
 
 bool is_numeric_data_type(const DataType& type);
@@ -237,33 +238,40 @@ bool has_annotation(
     const std::optional<std::unordered_set<std::string>>& expected_values =
         std::nullopt);
 
+/**
+ * Extracts a list of field references from the given encoded value.
+ *
+ * @param encoded_value A pointer to a `DexEncodedValue` which should represent
+ *        an array of encoded values.
+ * @return A vector of pointers to `DexFieldRef` extracted from the encoded
+ * value.
+ */
+std::vector<DexFieldRef*> extract_annotation_fields(
+    const DexEncodedValue* encoded_value);
+
 TaintConfig source(
     Context& context,
-    const Method* method,
     const std::string& kind,
     const std::vector<std::string>& features = {},
     Root::Kind callee_port = Root::Kind::Leaf,
-    RootSetAbstractDomain via_type_of_ports = {},
-    RootSetAbstractDomain via_value_of_ports = {});
+    TaggedRootSet via_type_of_ports = {},
+    TaggedRootSet via_value_of_ports = {});
 TaintConfig sink(
     Context& context,
-    const Method* method,
     const std::string& kind,
     const std::vector<std::string>& features = {},
     Root::Kind callee_port = Root::Kind::Leaf,
-    RootSetAbstractDomain via_type_of_ports = {},
-    RootSetAbstractDomain via_value_of_ports = {},
-    CanonicalNameSetAbstractDomain canonical_names =
-        CanonicalNameSetAbstractDomain{});
+    TaggedRootSet via_type_of_ports = {},
+    TaggedRootSet via_value_of_ports = {},
+    OriginSet origins = {});
 TaintConfig partial_sink(
     Context& context,
-    const Method* method,
     const std::string& kind,
     const std::string& label,
     const std::vector<std::string>& features = {},
     Root::Kind callee_port = Root::Kind::Leaf,
-    RootSetAbstractDomain via_type_of_ports = {},
-    RootSetAbstractDomain via_value_of_ports = {});
+    TaggedRootSet via_type_of_ports = {},
+    TaggedRootSet via_value_of_ports = {});
 
 } // namespace generator
 } // namespace marianatrench

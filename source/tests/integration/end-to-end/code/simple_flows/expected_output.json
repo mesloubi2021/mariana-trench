@@ -14,10 +14,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "ExternalUserInput",
               "origins" : 
               [
@@ -72,10 +75,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "LaunchingComponent",
               "origins" : 
               [
@@ -146,10 +152,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -182,10 +192,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -346,10 +360,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -365,10 +383,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -384,10 +406,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -413,10 +439,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -432,10 +462,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -445,10 +479,14 @@
           ]
         },
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -474,10 +512,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -493,10 +535,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -506,10 +552,14 @@
           ]
         },
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -535,10 +585,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -554,10 +608,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -567,10 +625,14 @@
           ]
         },
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -603,10 +665,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -622,10 +688,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -641,10 +711,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -678,10 +752,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -707,10 +785,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -737,10 +819,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -766,10 +852,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -795,10 +885,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -814,10 +908,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -833,10 +931,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -995,10 +1097,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "LaunchingComponent",
               "origins" : 
               [
@@ -1034,10 +1139,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "LaunchingComponent",
               "origins" : 
               [
@@ -1083,14 +1191,25 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(1)",
+            "position" : 
+            {
+              "end" : 23,
+              "line" : 19,
+              "path" : "DirectFlow.java",
+              "start" : 18
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                10,
-                11
+                9,
+                10
               ],
               "kind" : "LaunchingComponent",
               "origins" : 
@@ -1102,38 +1221,31 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Landroid/app/Activity;.startActivity:(Landroid/content/Intent;)V",
-                "port" : "Argument(1)"
-              }
-            ],
-            "method" : "Landroid/app/Activity;.startActivity:(Landroid/content/Intent;)V",
-            "position" : 
-            {
-              "end" : 23,
-              "line" : 19,
-              "path" : "DirectFlow.java",
-              "start" : 18
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Return",
+            "position" : 
+            {
+              "end" : 28,
+              "line" : 18,
+              "path" : "DirectFlow.java",
+              "start" : 20
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                10,
-                11
+                9,
+                10
               ],
               "kind" : "ExternalUserInput",
               "origins" : 
@@ -1145,25 +1257,7 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Landroid/app/Activity;.getIntent:()Landroid/content/Intent;",
-                "port" : "Return"
-              }
-            ],
-            "method" : "Landroid/app/Activity;.getIntent:()Landroid/content/Intent;",
-            "position" : 
-            {
-              "end" : 28,
-              "line" : 18,
-              "path" : "DirectFlow.java",
-              "start" : 20
-            }
-          }
+          ]
         }
       ]
     }
@@ -1202,14 +1296,25 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(0)",
+            "position" : 
+            {
+              "end" : 16,
+              "line" : 14,
+              "path" : "DirectFlowWithSanitizer.java",
+              "start" : 16
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                40,
-                41
+                39,
+                40
               ],
               "kind" : "Sink",
               "origins" : 
@@ -1221,38 +1326,31 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/marianatrench/integrationtests/Origin;.sink:(Ljava/lang/Object;)V",
-                "port" : "Argument(0)"
-              }
-            ],
-            "method" : "Lcom/facebook/marianatrench/integrationtests/Origin;.sink:(Ljava/lang/Object;)V",
-            "position" : 
-            {
-              "end" : 16,
-              "line" : 14,
-              "path" : "DirectFlowWithSanitizer.java",
-              "start" : 16
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Return",
+            "position" : 
+            {
+              "end" : 27,
+              "line" : 12,
+              "path" : "DirectFlowWithSanitizer.java",
+              "start" : 22
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                40,
-                41
+                39,
+                40
               ],
               "kind" : "Source",
               "origins" : 
@@ -1279,25 +1377,7 @@
               "line" : 13,
               "start" : 31
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/marianatrench/integrationtests/Origin;.source:()Ljava/lang/Object;",
-                "port" : "Return"
-              }
-            ],
-            "method" : "Lcom/facebook/marianatrench/integrationtests/Origin;.source:()Ljava/lang/Object;",
-            "position" : 
-            {
-              "end" : 27,
-              "line" : 12,
-              "path" : "DirectFlowWithSanitizer.java",
-              "start" : 22
-            }
-          }
+          ]
         }
       ]
     }
@@ -1332,14 +1412,25 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(1)",
+            "position" : 
+            {
+              "end" : 64,
+              "line" : 58,
+              "path" : "DirectOpenRedirectFlow.java",
+              "start" : 50
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                7,
-                8
+                6,
+                7
               ],
               "kind" : "LaunchingComponent",
               "origins" : 
@@ -1351,38 +1442,31 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/content/SecureContextHelper;.startFacebookActivity:(Landroid/content/Intent;Landroid/content/Context;)V",
-                "port" : "Argument(1)"
-              }
-            ],
-            "method" : "Lcom/facebook/content/SecureContextHelper;.startFacebookActivity:(Landroid/content/Intent;Landroid/content/Context;)V",
-            "position" : 
-            {
-              "end" : 64,
-              "line" : 58,
-              "path" : "DirectOpenRedirectFlow.java",
-              "start" : 50
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Return",
+            "position" : 
+            {
+              "end" : 36,
+              "line" : 26,
+              "path" : "DirectOpenRedirectFlow.java",
+              "start" : 28
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                7,
-                8
+                6,
+                7
               ],
               "kind" : "ExternalUserInput",
               "origins" : 
@@ -1412,25 +1496,7 @@
               "line" : 42,
               "start" : 61
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Landroid/app/Activity;.getIntent:()Landroid/content/Intent;",
-                "port" : "Return"
-              }
-            ],
-            "method" : "Landroid/app/Activity;.getIntent:()Landroid/content/Intent;",
-            "position" : 
-            {
-              "end" : 36,
-              "line" : 26,
-              "path" : "DirectOpenRedirectFlow.java",
-              "start" : 28
-            }
-          }
+          ]
         }
       ]
     }
@@ -1465,14 +1531,25 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(1)",
+            "position" : 
+            {
+              "end" : 32,
+              "line" : 17,
+              "path" : "ExternalDirectFlow.java",
+              "start" : 27
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                42,
-                43
+                41,
+                42
               ],
               "kind" : "LaunchingComponent",
               "origins" : 
@@ -1484,38 +1561,31 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Landroid/app/Activity;.startActivity:(Landroid/content/Intent;)V",
-                "port" : "Argument(1)"
-              }
-            ],
-            "method" : "Landroid/app/Activity;.startActivity:(Landroid/content/Intent;)V",
-            "position" : 
-            {
-              "end" : 32,
-              "line" : 17,
-              "path" : "ExternalDirectFlow.java",
-              "start" : 27
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Return",
+            "position" : 
+            {
+              "end" : 37,
+              "line" : 16,
+              "path" : "ExternalDirectFlow.java",
+              "start" : 29
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                42,
-                43
+                41,
+                42
               ],
               "kind" : "ExternalUserInput",
               "origins" : 
@@ -1527,25 +1597,7 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Landroid/app/Activity;.getIntent:()Landroid/content/Intent;",
-                "port" : "Return"
-              }
-            ],
-            "method" : "Landroid/app/Activity;.getIntent:()Landroid/content/Intent;",
-            "position" : 
-            {
-              "end" : 37,
-              "line" : 16,
-              "path" : "ExternalDirectFlow.java",
-              "start" : 29
-            }
-          }
+          ]
         }
       ]
     }
@@ -1573,14 +1625,25 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Return",
+            "position" : 
+            {
+              "end" : 23,
+              "line" : 13,
+              "path" : "FlowWithHops.java",
+              "start" : 18
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                44,
-                45
+                43,
+                44
               ],
               "kind" : "Source",
               "origins" : 
@@ -1592,25 +1655,7 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/marianatrench/integrationtests/Origin;.source:()Ljava/lang/Object;",
-                "port" : "Return"
-              }
-            ],
-            "method" : "Lcom/facebook/marianatrench/integrationtests/Origin;.source:()Ljava/lang/Object;",
-            "position" : 
-            {
-              "end" : 23,
-              "line" : 13,
-              "path" : "FlowWithHops.java",
-              "start" : 18
-            }
-          }
+          ]
         }
       ]
     }
@@ -1630,8 +1675,9 @@
       "taint" : 
       [
         {
-          "call" : 
+          "call_info" : 
           {
+            "call_kind" : "CallSite",
             "port" : "Return",
             "position" : 
             {
@@ -1645,11 +1691,10 @@
           "kinds" : 
           [
             {
-              "call_info" : "CallSite",
               "callee_interval" : 
               [
-                44,
-                45
+                43,
+                44
               ],
               "distance" : 1,
               "kind" : "Source",
@@ -1689,8 +1734,9 @@
       "sinks" : 
       [
         {
-          "call" : 
+          "call_info" : 
           {
+            "call_kind" : "CallSite",
             "port" : "Argument(1)",
             "position" : 
             {
@@ -1704,11 +1750,10 @@
           "kinds" : 
           [
             {
-              "call_info" : "CallSite",
               "callee_interval" : 
               [
-                44,
-                45
+                43,
+                44
               ],
               "distance" : 2,
               "kind" : "Sink",
@@ -1727,8 +1772,9 @@
       "sources" : 
       [
         {
-          "call" : 
+          "call_info" : 
           {
+            "call_kind" : "CallSite",
             "port" : "Return",
             "position" : 
             {
@@ -1742,11 +1788,10 @@
           "kinds" : 
           [
             {
-              "call_info" : "CallSite",
               "callee_interval" : 
               [
-                44,
-                45
+                43,
+                44
               ],
               "distance" : 2,
               "kind" : "Source",
@@ -1785,14 +1830,25 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(0)",
+            "position" : 
+            {
+              "end" : 23,
+              "line" : 21,
+              "path" : "FlowWithHops.java",
+              "start" : 16
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                44,
-                45
+                43,
+                44
               ],
               "kind" : "Sink",
               "origins" : 
@@ -1804,25 +1860,7 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/marianatrench/integrationtests/Origin;.sink:(Ljava/lang/Object;)V",
-                "port" : "Argument(0)"
-              }
-            ],
-            "method" : "Lcom/facebook/marianatrench/integrationtests/Origin;.sink:(Ljava/lang/Object;)V",
-            "position" : 
-            {
-              "end" : 23,
-              "line" : 21,
-              "path" : "FlowWithHops.java",
-              "start" : 16
-            }
-          }
+          ]
         }
       ]
     }
@@ -1842,8 +1880,9 @@
       "taint" : 
       [
         {
-          "call" : 
+          "call_info" : 
           {
+            "call_kind" : "CallSite",
             "port" : "Argument(1)",
             "position" : 
             {
@@ -1857,11 +1896,10 @@
           "kinds" : 
           [
             {
-              "call_info" : "CallSite",
               "callee_interval" : 
               [
-                44,
-                45
+                43,
+                44
               ],
               "distance" : 1,
               "kind" : "Sink",
@@ -1894,10 +1932,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -1940,14 +1982,25 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(1)",
+            "position" : 
+            {
+              "end" : 32,
+              "line" : 19,
+              "path" : "InheritanceFlows.java",
+              "start" : 27
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                46,
-                47
+                45,
+                46
               ],
               "kind" : "LaunchingComponent",
               "origins" : 
@@ -1959,38 +2012,31 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Landroid/app/Activity;.startActivity:(Landroid/content/Intent;)V",
-                "port" : "Argument(1)"
-              }
-            ],
-            "method" : "Landroid/app/Activity;.startActivity:(Landroid/content/Intent;)V",
-            "position" : 
-            {
-              "end" : 32,
-              "line" : 19,
-              "path" : "InheritanceFlows.java",
-              "start" : 27
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Return",
+            "position" : 
+            {
+              "end" : 37,
+              "line" : 18,
+              "path" : "InheritanceFlows.java",
+              "start" : 29
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                46,
-                47
+                45,
+                46
               ],
               "kind" : "ExternalUserInput",
               "origins" : 
@@ -2002,25 +2048,7 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Landroid/app/Activity;.getIntent:()Landroid/content/Intent;",
-                "port" : "Return"
-              }
-            ],
-            "method" : "Landroid/app/Activity;.getIntent:()Landroid/content/Intent;",
-            "position" : 
-            {
-              "end" : 37,
-              "line" : 18,
-              "path" : "InheritanceFlows.java",
-              "start" : 29
-            }
-          }
+          ]
         }
       ]
     }
@@ -2053,6 +2081,11 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
@@ -2060,7 +2093,6 @@
               [
                 "sanitize"
               ],
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2086,10 +2118,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "Sink",
               "origins" : 
               [
@@ -2113,10 +2148,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "Source",
               "origins" : 
               [
@@ -2235,10 +2273,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2344,10 +2386,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2363,10 +2409,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2470,10 +2520,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2499,10 +2553,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -2564,5 +2622,194 @@
   "position" : 
   {
     "line" : 14
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.<init>:()V",
+  "position" : 
+  {
+    "line" : 10
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkExpressionValueIsNotNull:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 25
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkFieldIsNotNull:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 56
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkFieldIsNotNull:(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 50
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkHasClass:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 74
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkHasClass:(Ljava/lang/String;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 78
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkNotNull:(Ljava/lang/Object;)V",
+  "position" : 
+  {
+    "line" : 13
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkNotNull:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 19
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkNotNullExpressionValue:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 31
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 68
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkParameterIsNotNull:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 62
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkReturnedValueIsNotNull:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 44
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkReturnedValueIsNotNull:(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 38
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwAssert:()V",
+  "position" : 
+  {
+    "line" : 106
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwAssert:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 110
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwIllegalArgument:()V",
+  "position" : 
+  {
+    "line" : 114
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwIllegalArgument:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 118
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwIllegalState:()V",
+  "position" : 
+  {
+    "line" : 122
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwIllegalState:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 126
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwJavaNpe:()V",
+  "position" : 
+  {
+    "line" : 90
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwJavaNpe:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 94
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwNpe:()V",
+  "position" : 
+  {
+    "line" : 82
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwNpe:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 86
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwUndefinedForReified:()V",
+  "position" : 
+  {
+    "line" : 130
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwUndefinedForReified:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 134
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwUninitializedProperty:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 98
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwUninitializedPropertyAccessException:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 102
   }
 }

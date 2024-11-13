@@ -7,10 +7,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "SensitiveData",
               "origins" : 
               [
@@ -44,10 +47,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "SensitiveData",
               "origins" : 
               [

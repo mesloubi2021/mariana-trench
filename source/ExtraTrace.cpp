@@ -10,45 +10,47 @@
 #include <Show.h>
 
 #include <mariana-trench/ExtraTrace.h>
+#include <mariana-trench/LocalTaint.h>
 #include <mariana-trench/Log.h>
 
 namespace marianatrench {
 
+ExtraTrace ExtraTrace::from_json(const Json::Value& value, Context& context) {
+  auto call_info = CallInfo::from_json(value, context);
+  const auto* kind = Kind::from_json(value, context);
+  auto frame_type =
+      FrameType::from_trace_string(JsonValidation::string(value, "frame_type"));
+  return ExtraTrace(
+      kind,
+      call_info.callee(),
+      call_info.call_position(),
+      call_info.callee_port(),
+      call_info.call_kind(),
+      frame_type);
+}
+
 Json::Value ExtraTrace::to_json() const {
-  auto extra_trace = Json::Value(Json::objectValue);
-  extra_trace["kind"] = kind_->to_trace_string();
-  if (call_kind_.is_origin()) {
-    if (position_ != nullptr) {
-      auto origin = Json::Value(Json::objectValue);
-      origin["position"] = position_->to_json();
-      if (callee_ != nullptr) {
-        origin["method"] = callee_->to_json();
-      }
-      extra_trace["origin"] = origin;
-    }
-  } else if (call_kind_.is_callsite()) {
-    auto call = Json::Value(Json::objectValue);
-    if (callee_ != nullptr) {
-      call["resolves_to"] = callee_->to_json();
-    }
-    if (position_ != nullptr) {
-      call["position"] = position_->to_json();
-    }
-    if (!callee_port_->root().is_leaf()) {
-      call["port"] = callee_port_->to_json();
-    }
-    extra_trace["call"] = call;
+  auto extra_trace = call_info_.to_json();
+  mt_assert(extra_trace.isObject() && !extra_trace.isNull());
+
+  auto kind = kind_->to_json();
+  mt_assert(kind.isObject() && !kind.isNull());
+  for (const auto& member : kind.getMemberNames()) {
+    extra_trace[member] = kind[member];
   }
+
+  extra_trace["frame_type"] = frame_type_.to_trace_string();
 
   return extra_trace;
 }
 
 std::ostream& operator<<(std::ostream& out, const ExtraTrace& extra_trace) {
-  return out << "ExtraTrace(kind=" << show(extra_trace.kind_)
-             << ", position=" << show(extra_trace.position_)
-             << ", callee=" << show(extra_trace.callee_)
-             << ", callee_port=" << show(extra_trace.callee_port_)
-             << ", call_kind=" << extra_trace.call_kind_ << ")";
+  return out << "ExtraTrace(kind=" << show(extra_trace.kind())
+             << ", frame_type=" << show(extra_trace.frame_type())
+             << ", position=" << show(extra_trace.position())
+             << ", callee=" << show(extra_trace.callee())
+             << ", callee_port=" << show(extra_trace.callee_port())
+             << ", call_kind=" << extra_trace.call_kind() << ")";
 }
 
 } // namespace marianatrench

@@ -42,8 +42,8 @@ Model create_model(
         AccessPath(Root(Root::Kind::Argument, argument.first)),
         generator::source(
             context,
-            method,
-            /* kind */ "ProviderUserInput"));
+            /* kind */ "ProviderUserInput"),
+        *context.heuristics);
   }
   auto return_type = generator::get_return_type_string(method);
   if (!return_type) {
@@ -54,8 +54,8 @@ Model create_model(
         AccessPath(Root(Root::Kind::Return)),
         generator::sink(
             context,
-            method,
-            /* kind */ "ProviderExitNode"));
+            /* kind */ "ProviderExitNode"),
+        *context.heuristics);
   }
   return model;
 }
@@ -72,7 +72,7 @@ std::vector<Model> ContentProviderGenerator::emit_method_models(
 
     for (const auto& tag_info : manifest_class_info.component_tags) {
       if (tag_info.tag == ComponentTag::Provider) {
-        auto* dex_class = redex::get_class(tag_info.classname);
+        const auto* dex_class = redex::get_class(tag_info.classname);
         if (dex_class) {
           std::unordered_set<std::string_view> parent_classes =
               generator::get_custom_parents_from_class(dex_class);

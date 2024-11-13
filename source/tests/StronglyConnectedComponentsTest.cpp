@@ -39,6 +39,7 @@ Context test_components(const Scope& scope) {
       /* model_generator_search_paths */ std::vector<std::string>{},
       /* remove_unreachable_code */ false,
       /* emit_all_via_cast_features */ false);
+  CachedModelsContext cached_models_context(context, *context.options);
   DexStore store("test_store");
   store.add_classes(scope);
   context.stores = {store};
@@ -46,29 +47,34 @@ Context test_components(const Scope& scope) {
       *context.kind_factory, context.stores);
   context.methods = std::make_unique<Methods>(context.stores);
   MethodMappings method_mappings{*context.methods};
-  auto intent_routing_analyzer = IntentRoutingAnalyzer::run(context);
   context.control_flow_graphs =
       std::make_unique<ControlFlowGraphs>(context.stores);
   context.types = std::make_unique<Types>(*context.options, context.stores);
-  context.class_hierarchies =
-      std::make_unique<ClassHierarchies>(*context.options, context.stores);
+  context.class_hierarchies = std::make_unique<ClassHierarchies>(
+      *context.options, context.stores, cached_models_context);
   context.overrides = std::make_unique<Overrides>(
-      *context.options, *context.methods, context.stores);
+      *context.options,
+      *context.methods,
+      context.stores,
+      cached_models_context);
   context.fields = std::make_unique<Fields>();
   context.call_graph = std::make_unique<CallGraph>(
       *context.options,
-      *context.methods,
-      *context.fields,
       *context.types,
       *context.class_hierarchies,
-      *context.overrides,
+      LifecycleMethods{},
+      Shims{/* global_shims_size */ 0},
       *context.feature_factory,
-      Shims{/* global_shims_size */ 0, intent_routing_analyzer},
+      *context.heuristics,
+      *context.methods,
+      *context.fields,
+      *context.overrides,
       method_mappings);
   context.rules = std::make_unique<Rules>(context);
   auto registry = Registry(context);
   context.dependencies = std::make_unique<Dependencies>(
       *context.options,
+      *context.heuristics,
       *context.methods,
       *context.overrides,
       *context.call_graph,

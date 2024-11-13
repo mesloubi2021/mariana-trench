@@ -10,7 +10,6 @@
 #include <fmt/format.h>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/filesystem/string_file.hpp>
 
 #include <IRAssembler.h>
 #include <RedexContext.h>
@@ -24,8 +23,9 @@
 #include <mariana-trench/Dependencies.h>
 #include <mariana-trench/FieldCache.h>
 #include <mariana-trench/Fields.h>
+#include <mariana-trench/Filesystem.h>
 #include <mariana-trench/Interprocedural.h>
-#include <mariana-trench/JsonValidation.h>
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/Options.h>
 #include <mariana-trench/Overrides.h>
@@ -372,8 +372,8 @@ Scope stubs() {
 struct IntegrationTest : public test::ContextGuard,
                          public testing::TestWithParam<std::string> {};
 
-boost::filesystem::path root_directory() {
-  return boost::filesystem::path(__FILE__).parent_path();
+std::filesystem::path root_directory() {
+  return std::filesystem::path(__FILE__).parent_path();
 }
 
 std::vector<std::string> sexp_paths() {
@@ -381,12 +381,12 @@ std::vector<std::string> sexp_paths() {
   std::vector<std::string> paths;
 
   for (const auto& directory :
-       boost::filesystem::recursive_directory_iterator(root)) {
+       std::filesystem::recursive_directory_iterator(root)) {
     auto path = directory.path();
     if (path.extension() != ".sexp") {
       continue;
     }
-    paths.push_back(boost::filesystem::relative(path, root).native());
+    paths.push_back(std::filesystem::relative(path, root).native());
   }
 
   return paths;
@@ -424,15 +424,15 @@ void add_flow_class_fields(DexStore& store) {
 } // namespace
 
 TEST_P(IntegrationTest, ReturnsExpectedModel) {
-  boost::filesystem::path name = GetParam();
+  std::filesystem::path name = GetParam();
   LOG(1, "Test case `{}`", name);
-  boost::filesystem::path path = root_directory() / name;
+  std::filesystem::path path = root_directory() / name;
 
   Scope scope(stubs());
   std::vector<const DexMethod*> methods;
 
   std::string unparsed_source;
-  boost::filesystem::load_string_file(path, unparsed_source);
+  filesystem::load_string_file(path, unparsed_source);
   auto sources = Parser::parse(unparsed_source);
   auto sorted_sources = Parser::sort_by_hierarchy(sources);
 
@@ -481,6 +481,7 @@ TEST_P(IntegrationTest, ReturnsExpectedModel) {
       /* emit_all_via_cast_features */ false,
       /* remove_unreachable_code */ false);
   const auto& options = *context.options;
+  CachedModelsContext cached_models_context(context, options);
 
   DexStore store("test_store");
   store.add_classes(scope);
@@ -491,27 +492,31 @@ TEST_P(IntegrationTest, ReturnsExpectedModel) {
       *context.kind_factory, context.stores);
   context.methods = std::make_unique<Methods>(context.stores);
   MethodMappings method_mappings{*context.methods};
-  auto intent_routing_analyzer = IntentRoutingAnalyzer::run(context);
   context.fields = std::make_unique<Fields>(context.stores);
   context.positions = std::make_unique<Positions>(options, context.stores);
   context.control_flow_graphs =
       std::make_unique<ControlFlowGraphs>(context.stores);
   context.types = std::make_unique<Types>(options, context.stores);
-  context.class_hierarchies =
-      std::make_unique<ClassHierarchies>(*context.options, context.stores);
+  context.class_hierarchies = std::make_unique<ClassHierarchies>(
+      *context.options, context.stores, cached_models_context);
   context.field_cache =
       std::make_unique<FieldCache>(*context.class_hierarchies, context.stores);
   context.overrides = std::make_unique<Overrides>(
-      *context.options, *context.methods, context.stores);
-  context.call_graph = std::make_unique<CallGraph>(
       *context.options,
       *context.methods,
-      *context.fields,
+      context.stores,
+      cached_models_context);
+  context.call_graph = std::make_unique<CallGraph>(
+      *context.options,
       *context.types,
       *context.class_hierarchies,
-      *context.overrides,
+      LifecycleMethods{},
+      Shims{/* global_shims_size */ 0},
       *context.feature_factory,
-      Shims{/* global_shims_size */ 0, intent_routing_analyzer},
+      *context.heuristics,
+      *context.methods,
+      *context.fields,
+      *context.overrides,
       method_mappings);
   context.rules = std::make_unique<Rules>(context, rules);
   context.used_kinds = std::make_unique<UsedKinds>(
@@ -535,6 +540,7 @@ TEST_P(IntegrationTest, ReturnsExpectedModel) {
 
   context.dependencies = std::make_unique<Dependencies>(
       *context.options,
+      *context.heuristics,
       *context.methods,
       *context.overrides,
       *context.call_graph,
@@ -562,16 +568,16 @@ TEST_P(IntegrationTest, ReturnsExpectedModel) {
 
   auto expected_path = path.replace_extension(".expected");
   std::string expected_output;
-  if (boost::filesystem::exists(expected_path)) {
-    boost::filesystem::load_string_file(expected_path, expected_output);
+  if (std::filesystem::exists(expected_path)) {
+    filesystem::load_string_file(expected_path, expected_output);
   }
-  auto models_output = JsonValidation::to_styled_string(value);
+  auto models_output = JsonWriter::to_styled_string(value);
   models_output =
       boost::regex_replace(models_output, boost::regex("\\s+\n"), "\n");
   models_output += "\n";
 
   if (models_output != expected_output) {
-    boost::filesystem::save_string_file(
+    filesystem::save_string_file(
         path.replace_extension(".expected.actual"), models_output);
   }
 

@@ -42,10 +42,15 @@ std::vector<Model> TaintInTaintThisGenerator::visit_method(
     return {};
   }
 
+  if (preloaded_models_ && preloaded_models_->has_model(method)) {
+    // Do not overwrite preloaded models with taint-in-taint-this.
+    return {};
+  }
+
   if (method->is_abstract() || method->is_interface()) {
     const auto& overrides = context_.overrides->get(method);
     if (!overrides.empty() &&
-        overrides.size() < Heuristics::kJoinOverrideThreshold &&
+        overrides.size() < context_.heuristics->join_override_threshold() &&
         !context_.overrides->has_obscure_override_for(method)) {
       return {};
     }

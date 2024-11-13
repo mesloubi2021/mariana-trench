@@ -19,7 +19,6 @@ public class Flow {
     // Collapse source flows into sink
     Origin.sink(test);
 
-    // Collapsed source flows into return sink
     return test;
   }
 
@@ -46,7 +45,7 @@ public class Flow {
     public Tree c;
     public Tree d;
     public Tree e;
-  };
+  }
 
   public Tree widened_source_sink_depth(Tree argument) {
     Origin.sink(argument.a.b.c.d.e);

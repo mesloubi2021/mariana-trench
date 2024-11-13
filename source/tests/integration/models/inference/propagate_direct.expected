@@ -20,10 +20,14 @@
           "output" :
           [
             {
+              "call_info" :
+              {
+                "call_kind" : "Propagation",
+                "port" : "Return"
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Propagation",
                   "kind" : "LocalReturn",
                   "output_paths" :
                   {

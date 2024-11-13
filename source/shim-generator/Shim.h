@@ -11,7 +11,14 @@
 #include <optional>
 #include <variant>
 
+#include <boost/container/flat_map.hpp>
+#include <boost/container/flat_set.hpp>
+#include <boost/container_hash/hash_fwd.hpp>
+
+#include <DexMemberRefs.h>
+
 #include <mariana-trench/Access.h>
+#include <mariana-trench/IncludeMacros.h>
 #include <mariana-trench/JsonValidation.h>
 #include <mariana-trench/Method.h>
 
@@ -25,12 +32,14 @@ using ShimParameterPosition = ParameterPosition;
  * constraints on the shim generator) with helper methods to query
  * dex-types/positions parameters.
  */
-class ShimMethod {
+class ShimMethod final {
  public:
   explicit ShimMethod(const Method* method);
 
   const Method* method() const;
+
   DexType* MT_NULLABLE parameter_type(ShimParameterPosition argument) const;
+
   std::optional<ShimParameterPosition> type_position(const DexType* type) const;
 
   friend std::ostream& operator<<(
@@ -40,7 +49,8 @@ class ShimMethod {
  private:
   const Method* method_;
   // Maps parameter type to position in method_
-  std::unordered_map<const DexType*, ShimParameterPosition> types_to_position_;
+  boost::container::flat_map<const DexType*, ShimParameterPosition>
+      types_to_position_;
 };
 
 /**
@@ -48,9 +58,9 @@ class ShimMethod {
  * `shim-target` (`ParameterPosition`) to
  * parameter positions in the `shimmed-method` (`ShimParameterPosition`)
  */
-class ShimParameterMapping {
+class ShimParameterMapping final {
  public:
-  using MapType = std::unordered_map<Root, ShimParameterPosition>;
+  using MapType = boost::container::flat_map<Root, ShimParameterPosition>;
 
  public:
   explicit ShimParameterMapping(
@@ -58,13 +68,20 @@ class ShimParameterMapping {
 
   INCLUDE_DEFAULT_COPY_CONSTRUCTORS_AND_ASSIGNMENTS(ShimParameterMapping)
 
+  bool operator==(const ShimParameterMapping& other) const;
+
+  bool operator<(const ShimParameterMapping& other) const;
+
   static ShimParameterMapping from_json(
       const Json::Value& value,
       bool infer_from_types);
 
   bool empty() const;
+
   bool contains(const Root& position) const;
+
   std::optional<ShimParameterPosition> at(const Root& parameter_position) const;
+
   void insert(
       const Root& parameter_position,
       ShimParameterPosition shim_parameter_position);
@@ -78,6 +95,7 @@ class ShimParameterMapping {
   }
 
   void set_infer_from_types(bool value);
+
   bool infer_from_types() const;
 
   void add_receiver(ShimParameterPosition shim_parameter_position);
@@ -98,22 +116,39 @@ class ShimParameterMapping {
       std::ostream& out,
       const ShimParameterMapping& map);
 
+  friend std::hash<ShimParameterMapping>;
+
  private:
   MapType map_;
   bool infer_from_types_;
 };
 
 /**
- * Represents shim-targets which are instance methods.
+ * Represents shim-target methods with static or instance receiver kinds.
  */
-class ShimTarget {
+class ShimTarget final {
  public:
+  explicit ShimTarget(
+      DexMethodSpec method_spec,
+      ShimParameterMapping parameter_mapping,
+      bool is_static);
+
   explicit ShimTarget(
       const Method* method,
       ShimParameterMapping parameter_mapping);
 
-  const Method* method() const {
-    return call_target_;
+  INCLUDE_DEFAULT_COPY_CONSTRUCTORS_AND_ASSIGNMENTS(ShimTarget)
+
+  bool operator==(const ShimTarget& other) const;
+
+  bool operator<(const ShimTarget& other) const;
+
+  const DexMethodSpec& method_spec() const {
+    return method_spec_;
+  }
+
+  bool is_static() const {
+    return is_static_;
   }
 
   std::optional<Register> receiver_register(
@@ -126,26 +161,35 @@ class ShimTarget {
       std::ostream& out,
       const ShimTarget& shim_target);
 
+  friend struct std::hash<ShimTarget>;
+
  private:
-  const Method* call_target_;
+  DexMethodSpec method_spec_;
   ShimParameterMapping parameter_mapping_;
+  bool is_static_;
 };
 
 /**
- * Represents shim-targets which are resolved using reflection.
+ * Represents shim-target methods whose receiver types are resolved using
+ * reflection.
  */
-class ShimReflectionTarget {
+class ShimReflectionTarget final {
  public:
   explicit ShimReflectionTarget(
       DexMethodSpec method_spec,
       ShimParameterMapping parameter_mapping);
 
+  INCLUDE_DEFAULT_COPY_CONSTRUCTORS_AND_ASSIGNMENTS(ShimReflectionTarget)
+
+  bool operator==(const ShimReflectionTarget& other) const;
+
+  bool operator<(const ShimReflectionTarget& other) const;
+
   const DexMethodSpec& method_spec() const {
     return method_spec_;
   }
 
-  std::optional<Register> receiver_register(
-      const IRInstruction* instruction) const;
+  Register receiver_register(const IRInstruction* instruction) const;
 
   std::unordered_map<Root, Register> root_registers(
       const Method* resolved_reflection,
@@ -155,17 +199,19 @@ class ShimReflectionTarget {
       std::ostream& out,
       const ShimReflectionTarget& shim_reflection_target);
 
+  friend struct std::hash<ShimReflectionTarget>;
+
  private:
   DexMethodSpec method_spec_;
   ShimParameterMapping parameter_mapping_;
 };
 
 /**
- * Represents shim-targets which are the generated lifecycle wrappers.
+ * Represents shim-target methods which are the generated lifecycle wrappers.
  * The target lifecycle wrapper method is resolved at the call-site only
  * as each generated wrapper has a unique signature.
  */
-class ShimLifecycleTarget {
+class ShimLifecycleTarget final {
  public:
   explicit ShimLifecycleTarget(
       std::string method_name,
@@ -173,7 +219,13 @@ class ShimLifecycleTarget {
       bool is_reflection,
       bool infer_parameter_mapping);
 
-  std::string_view method_name() const {
+  INCLUDE_DEFAULT_COPY_CONSTRUCTORS_AND_ASSIGNMENTS(ShimLifecycleTarget)
+
+  bool operator==(const ShimLifecycleTarget& other) const;
+
+  bool operator<(const ShimLifecycleTarget& other) const;
+
+  const std::string& method_name() const {
     return method_name_;
   }
 
@@ -196,6 +248,8 @@ class ShimLifecycleTarget {
       std::ostream& out,
       const ShimLifecycleTarget& shim_lifecycle_target);
 
+  friend struct std::hash<ShimLifecycleTarget>;
+
  private:
   std::string method_name_;
   ShimParameterPosition receiver_position_;
@@ -206,14 +260,83 @@ class ShimLifecycleTarget {
 using ShimTargetVariant =
     std::variant<ShimTarget, ShimReflectionTarget, ShimLifecycleTarget>;
 
+} // namespace marianatrench
+
+template <>
+struct std::hash<marianatrench::ShimParameterMapping> {
+  std::size_t operator()(
+      const marianatrench::ShimParameterMapping& shim_parameter_mapping) const {
+    std::size_t seed = 0;
+    boost::hash_combine(seed, shim_parameter_mapping.infer_from_types_);
+    for (const auto& [root, position] : shim_parameter_mapping.map_) {
+      boost::hash_combine(seed, std::hash<marianatrench::Root>()(root));
+      boost::hash_combine(seed, position);
+    }
+    return seed;
+  }
+};
+
+template <>
+struct std::hash<marianatrench::ShimTarget> {
+  std::size_t operator()(const marianatrench::ShimTarget& shim_target) const {
+    std::size_t seed = 0;
+    boost::hash_combine(
+        seed, std::hash<DexMethodSpec>()(shim_target.method_spec_));
+    boost::hash_combine(
+        seed,
+        std::hash<marianatrench::ShimParameterMapping>()(
+            shim_target.parameter_mapping_));
+    boost::hash_combine(seed, shim_target.is_static_);
+    return seed;
+  }
+};
+
+template <>
+struct std::hash<marianatrench::ShimReflectionTarget> {
+  std::size_t operator()(
+      const marianatrench::ShimReflectionTarget& shim_reflection_target) const {
+    std::size_t seed = 0;
+    boost::hash_combine(
+        seed, std::hash<DexMethodSpec>()(shim_reflection_target.method_spec_));
+    boost::hash_combine(
+        seed,
+        std::hash<marianatrench::ShimParameterMapping>()(
+            shim_reflection_target.parameter_mapping_));
+    return seed;
+  }
+};
+
+template <>
+struct std::hash<marianatrench::ShimLifecycleTarget> {
+  std::size_t operator()(
+      const marianatrench::ShimLifecycleTarget& shim_lifecycle_target) const {
+    std::size_t seed = 0;
+    boost::hash_combine(seed, shim_lifecycle_target.method_name_);
+    boost::hash_combine(seed, shim_lifecycle_target.receiver_position_);
+    boost::hash_combine(seed, shim_lifecycle_target.is_reflection_);
+    boost::hash_combine(seed, shim_lifecycle_target.infer_from_types_);
+    return seed;
+  }
+};
+
+namespace marianatrench {
+
 /**
  * Represents an instantiated Shim for one `shimmed-method`.
  */
-class InstantiatedShim {
+class InstantiatedShim final {
+ public:
+  template <typename Element>
+  using FlatSet = boost::container::flat_set<Element>;
+
  public:
   explicit InstantiatedShim(const Method* method);
 
+  MOVE_CONSTRUCTOR_ONLY(InstantiatedShim)
+
   void add_target(ShimTargetVariant target);
+
+  void merge_with(InstantiatedShim other);
 
   const Method* method() const {
     return method_;
@@ -223,15 +346,15 @@ class InstantiatedShim {
     return targets_.empty() && reflections_.empty() && lifecycles_.empty();
   }
 
-  const std::vector<ShimTarget>& targets() const {
+  const FlatSet<ShimTarget>& targets() const {
     return targets_;
   }
 
-  const std::vector<ShimReflectionTarget>& reflections() const {
+  const FlatSet<ShimReflectionTarget>& reflections() const {
     return reflections_;
   }
 
-  const std::vector<ShimLifecycleTarget>& lifecycles() const {
+  const FlatSet<ShimLifecycleTarget>& lifecycles() const {
     return lifecycles_;
   }
 
@@ -241,68 +364,41 @@ class InstantiatedShim {
 
  private:
   const Method* method_;
-  std::vector<ShimTarget> targets_;
-  std::vector<ShimReflectionTarget> reflections_;
-  std::vector<ShimLifecycleTarget> lifecycles_;
+  FlatSet<ShimTarget> targets_;
+  FlatSet<ShimReflectionTarget> reflections_;
+  FlatSet<ShimLifecycleTarget> lifecycles_;
 };
 
-class Shim {
+class Shim final {
  public:
   explicit Shim(
       const InstantiatedShim* MT_NULLABLE instantiated_shim,
-      std::vector<ShimTarget> intent_routing_targets);
+      InstantiatedShim::FlatSet<ShimTarget> intent_routing_targets);
 
-  const Method* method() const {
-    return instantiated_shim_->method();
+  const Method* MT_NULLABLE method() const {
+    return instantiated_shim_ ? instantiated_shim_->method() : nullptr;
   }
 
   bool empty() const {
-    return instantiated_shim_->empty() && intent_routing_targets_.empty();
+    return (instantiated_shim_ == nullptr || instantiated_shim_->empty()) &&
+        intent_routing_targets_.empty();
   }
 
-  const std::vector<ShimTarget>& targets() const {
-    if (instantiated_shim_ == nullptr) {
-      return Shim::empty_shim_targets();
-    }
-    return instantiated_shim_->targets();
-  }
+  const InstantiatedShim::FlatSet<ShimTarget>& targets() const;
 
-  const std::vector<ShimReflectionTarget>& reflections() const {
-    if (instantiated_shim_ == nullptr) {
-      return Shim::empty_reflection_targets();
-    }
-    return instantiated_shim_->reflections();
-  }
+  const InstantiatedShim::FlatSet<ShimReflectionTarget>& reflections() const;
 
-  const std::vector<ShimLifecycleTarget>& lifecycles() const {
-    if (instantiated_shim_ == nullptr) {
-      return Shim::empty_lifecycle_targets();
-    }
-    return instantiated_shim_->lifecycles();
-  }
+  const InstantiatedShim::FlatSet<ShimLifecycleTarget>& lifecycles() const;
 
-  const std::vector<ShimTarget>& intent_routing_targets() const {
+  const InstantiatedShim::FlatSet<ShimTarget>& intent_routing_targets() const {
     return intent_routing_targets_;
-  }
-
-  static const std::vector<ShimTarget>& empty_shim_targets() {
-    static const std::vector<ShimTarget> empty;
-    return empty;
-  }
-  static const std::vector<ShimLifecycleTarget>& empty_lifecycle_targets() {
-    static const std::vector<ShimLifecycleTarget> empty;
-    return empty;
-  }
-  static const std::vector<ShimReflectionTarget>& empty_reflection_targets() {
-    static const std::vector<ShimReflectionTarget> empty;
-    return empty;
   }
 
   friend std::ostream& operator<<(std::ostream& out, const Shim& shim);
 
  private:
-  const InstantiatedShim* instantiated_shim_;
-  std::vector<ShimTarget> intent_routing_targets_;
+  const InstantiatedShim* MT_NULLABLE instantiated_shim_;
+  InstantiatedShim::FlatSet<ShimTarget> intent_routing_targets_;
 };
 
 } // namespace marianatrench

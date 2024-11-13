@@ -12,6 +12,7 @@
 #include <mariana-trench/FeatureFactory.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/Overrides.h>
+#include <mariana-trench/Positions.h>
 
 namespace marianatrench {
 
@@ -40,6 +41,7 @@ MethodContext::MethodContext(
       used_kinds(*context.used_kinds),
       access_path_factory(*context.access_path_factory),
       origin_factory(*context.origin_factory),
+      heuristics(*context.heuristics),
       memory_factory(previous_model.method()),
       previous_model(previous_model),
       new_model(new_model),
@@ -62,11 +64,12 @@ Model MethodContext::model_at_callsite(
       show(call_target.resolved_base_callee()));
 
   if (!call_target.resolved()) {
-    return Model(
+    auto model = Model(
         /* method */ nullptr,
         context_,
-        Model::Mode::SkipAnalysis | Model::Mode::AddViaObscureFeature |
-            Model::Mode::TaintInTaintOut);
+        Model::Mode::SkipAnalysis | Model::Mode::AddViaObscureFeature);
+    model.add_taint_in_taint_out(context_, call_target.instruction());
+    return model;
   }
 
   if (call_target.is_virtual()) {
@@ -123,10 +126,72 @@ Model MethodContext::model_at_callsite(
   }
 
   model.approximate(
-      FeatureMayAlwaysSet{feature_factory.get_widen_broadening_feature()});
+      FeatureMayAlwaysSet{feature_factory.get_widen_broadening_feature()},
+      *context_.heuristics);
 
   callsite_model_cache_.emplace(CacheKey{call_target, position}, model);
   return model;
+}
+
+namespace {
+
+Taint propagate_field_or_literal_taint(
+    const Taint& taint,
+    const Position* call_position,
+    const Options& options,
+    Context& context) {
+  return taint.propagate(
+      /* callee */ nullptr,
+      /* callee_port */ nullptr,
+      call_position,
+      options.maximum_source_sink_distance(),
+      context,
+      /* source_register_types */ {},
+      /* source_constant_arguments */ {},
+      /* class_interval_context */ CallClassIntervalContext(),
+      /* caller_class_interval */ ClassIntervals::Interval::top(),
+      /* add_features_to_arguments */ {});
+}
+
+} // namespace
+
+const Position* MethodContext::position() const {
+  return positions.get(method());
+}
+
+Taint MethodContext::field_sources_at_callsite(
+    const FieldTarget& field_target,
+    const InstructionAliasResults& aliasing) const {
+  auto declared_field_model = registry.get(field_target.field);
+  if (declared_field_model.empty()) {
+    return Taint::bottom();
+  }
+
+  auto* call_position = positions.get(method(), aliasing.position());
+  return propagate_field_or_literal_taint(
+      declared_field_model.sources(), call_position, options, context_);
+}
+
+Taint MethodContext::field_sinks_at_callsite(
+    const FieldTarget& field_target,
+    const InstructionAliasResults& aliasing) const {
+  auto declared_field_model = registry.get(field_target.field);
+  if (declared_field_model.empty()) {
+    return Taint::bottom();
+  }
+
+  auto* call_position = positions.get(method(), aliasing.position());
+  return propagate_field_or_literal_taint(
+      declared_field_model.sinks(), call_position, options, context_);
+}
+
+Taint MethodContext::literal_sources_at_callsite(
+    std::string_view literal,
+    const InstructionAliasResults& aliasing) const {
+  const LiteralModel model{registry.match_literal(literal)};
+  auto* call_position = positions.get(method(), aliasing.position());
+  return propagate_field_or_literal_taint(
+      model.sources(), call_position, options, context_);
 }
 
 } // namespace marianatrench

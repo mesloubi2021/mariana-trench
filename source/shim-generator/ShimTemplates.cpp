@@ -11,7 +11,6 @@
 
 #include <re2/re2.h>
 
-#include <DexClass.h>
 #include <TypeUtil.h>
 
 #include <mariana-trench/Access.h>
@@ -28,7 +27,6 @@ namespace {
 
 std::optional<ShimTarget> try_make_shim_target(
     const TargetTemplate& target_template,
-    const Methods* methods,
     const ShimMethod& shim_method) {
   const auto& receiver_info = target_template.receiver_info();
 
@@ -43,10 +41,10 @@ std::optional<ShimTarget> try_make_shim_target(
     return std::nullopt;
   }
 
-  const Method* call_target = methods->get(
+  auto method_spec = redex::get_method_spec(
       fmt::format("{}.{}", receiver_type->str(), target_template.target()));
 
-  if (call_target == nullptr) {
+  if (!method_spec) {
     WARNING(
         1,
         "Could not instantiate shim target: `{}` for resolved receiver: `{}` specfied for method: `{}`",
@@ -56,31 +54,24 @@ std::optional<ShimTarget> try_make_shim_target(
     return std::nullopt;
   }
 
-  if (receiver_info.kind() == ReceiverInfo::Kind::STATIC &&
-      !call_target->is_static()) {
-    WARNING(
-        1,
-        "Expected static shim target: `{}` specfied for method: `{}`",
-        call_target->show(),
-        shim_method.method()->show());
-    return std::nullopt;
-  }
-
+  bool is_static = receiver_info.kind() == ReceiverInfo::Kind::STATIC;
   auto instantiated_parameter_map =
       target_template.parameter_map().instantiate_parameters(
-          call_target->get_name(),
-          call_target->get_class(),
-          call_target->get_proto(),
-          call_target->is_static(),
+          method_spec->name->str(),
+          method_spec->cls,
+          method_spec->proto,
+          is_static,
           shim_method);
 
-  if (receiver_info.kind() == ReceiverInfo::Kind::INSTANCE ||
-      receiver_info.kind() == ReceiverInfo::Kind::REFLECTION) {
+  if (!is_static) {
     instantiated_parameter_map.add_receiver(
         std::get<ShimParameterPosition>(receiver_info.receiver()));
   }
 
-  return ShimTarget(call_target, std::move(instantiated_parameter_map));
+  return ShimTarget(
+      std::move(*method_spec),
+      std::move(instantiated_parameter_map),
+      is_static);
 }
 
 std::optional<ShimReflectionTarget> try_make_shim_reflection_target(
@@ -124,7 +115,7 @@ std::optional<ShimReflectionTarget> try_make_shim_reflection_target(
       std::get<ShimParameterPosition>(receiver_info.receiver()));
 
   return ShimReflectionTarget(
-      *method_spec, std::move(instantiated_parameter_map));
+      std::move(*method_spec), std::move(instantiated_parameter_map));
 }
 
 std::optional<ShimLifecycleTarget> try_make_shim_lifecycle_target(
@@ -223,6 +214,16 @@ TargetTemplate::TargetTemplate(
       parameter_map_(std::move(parameter_map)) {}
 
 TargetTemplate TargetTemplate::from_json(const Json::Value& callee) {
+  JsonValidation::check_unexpected_members(
+      callee,
+      {"type_of",
+       "static",
+       "reflected_type_of",
+       "method_name",
+       "lifecycle_name",
+       "parameters_map",
+       "infer_parameters_from_types"});
+
   const auto& parameters_map =
       JsonValidation::null_or_object(callee, "parameters_map");
   auto parameter_map = ShimParameterMapping::from_json(
@@ -260,7 +261,7 @@ std::optional<ShimTargetVariant> TargetTemplate::instantiate(
     const ShimMethod& shim_method) const {
   switch (kind_) {
     case Kind::DEFINED:
-      return try_make_shim_target(*this, methods, shim_method);
+      return try_make_shim_target(*this, shim_method);
 
     case Kind::REFLECTION:
       return try_make_shim_reflection_target(*this, shim_method);
@@ -308,6 +309,7 @@ ShimTemplate::ShimTemplate(std::vector<shim::TargetTemplate> targets)
 ShimTemplate ShimTemplate::from_json(const Json::Value& shim_json) {
   using namespace shim;
   std::vector<TargetTemplate> target_templates;
+  JsonValidation::check_unexpected_members(shim_json, {"callees"});
 
   for (const auto& callee :
        JsonValidation::null_or_array(shim_json, "callees")) {

@@ -5,9 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/JsonValidation.h>
 #include <mariana-trench/KindFactory.h>
 #include <mariana-trench/Log.h>
+#include <mariana-trench/TransformsFactory.h>
 #include <mariana-trench/constraints/MethodConstraints.h>
 #include <mariana-trench/constraints/ParameterConstraints.h>
 #include <mariana-trench/model-generator/ModelTemplates.h>
@@ -24,79 +26,8 @@ std::optional<ParameterPosition> TemplateVariableMapping::at(
     const std::string& name) const {
   try {
     return map_.at(name);
-  } catch (const std::out_of_range& exception) {
+  } catch (const std::out_of_range&) {
     return std::nullopt;
-  }
-}
-
-ParameterPositionTemplate::ParameterPositionTemplate(
-    ParameterPosition parameter_position)
-    : parameter_position_(parameter_position) {}
-
-ParameterPositionTemplate::ParameterPositionTemplate(
-    std::string parameter_position)
-    : parameter_position_(std::move(parameter_position)) {}
-
-std::string ParameterPositionTemplate::to_string() const {
-  if (std::holds_alternative<ParameterPosition>(parameter_position_)) {
-    return std::to_string(std::get<ParameterPosition>(parameter_position_));
-  } else if (std::holds_alternative<std::string>(parameter_position_)) {
-    return std::get<std::string>(parameter_position_);
-  } else {
-    mt_unreachable();
-  }
-}
-
-ParameterPosition ParameterPositionTemplate::instantiate(
-    const TemplateVariableMapping& parameter_positions) const {
-  if (std::holds_alternative<ParameterPosition>(parameter_position_)) {
-    return std::get<ParameterPosition>(parameter_position_);
-  } else if (std::holds_alternative<std::string>(parameter_position_)) {
-    auto result =
-        parameter_positions.at(std::get<std::string>(parameter_position_));
-    if (result) {
-      return *result;
-    } else {
-      throw JsonValidationError(
-          Json::Value(std::get<std::string>(parameter_position_)),
-          /* field */ "parameter_position",
-          /* expected */ "a variable name that is defined in \"variable\"");
-    }
-  } else {
-    mt_unreachable();
-  }
-}
-
-RootTemplate::RootTemplate(
-    Root::Kind kind,
-    std::optional<ParameterPositionTemplate> parameter_position)
-    : kind_(kind), parameter_position_(parameter_position) {}
-
-bool RootTemplate::is_argument() const {
-  return kind_ == Root::Kind::Argument;
-}
-
-std::string RootTemplate::to_string() const {
-  return is_argument()
-      ? fmt::format("Argument({})", parameter_position_->to_string())
-      : "Return";
-}
-
-Root RootTemplate::instantiate(
-    const TemplateVariableMapping& parameter_positions) const {
-  switch (kind_) {
-    case Root::Kind::Return: {
-      return Root(Root::Kind::Return);
-    }
-    case Root::Kind::Argument: {
-      mt_assert(parameter_position_);
-      return Root(
-          Root::Kind::Argument,
-          parameter_position_->instantiate(parameter_positions));
-    }
-    default: {
-      mt_unreachable();
-    }
   }
 }
 
@@ -104,37 +35,14 @@ AccessPathTemplate::AccessPathTemplate(RootTemplate root, Path path)
     : root_(root), path_(std::move(path)) {}
 
 AccessPathTemplate AccessPathTemplate::from_json(const Json::Value& value) {
-  auto elements = AccessPath::split_path(value);
+  auto elements = Path::split_path(JsonValidation::string(value));
 
   if (elements.empty()) {
     throw JsonValidationError(
         value, /* field */ std::nullopt, "non-empty string for access path");
   }
 
-  // Parse the root.
-  auto root = RootTemplate(Root::Kind::Return);
-  const auto& root_string = elements.front();
-
-  if (boost::starts_with(root_string, "Argument(") &&
-      boost::ends_with(root_string, ")") && root_string.size() >= 11) {
-    auto parameter_string = root_string.substr(9, root_string.size() - 10);
-    auto parameter = parse_parameter_position(parameter_string);
-    if (parameter) {
-      root = RootTemplate(
-          Root::Kind::Argument, ParameterPositionTemplate(*parameter));
-    } else {
-      root = RootTemplate(
-          Root::Kind::Argument, ParameterPositionTemplate(parameter_string));
-    }
-  } else if (root_string != "Return") {
-    throw JsonValidationError(
-        value,
-        /* field */ std::nullopt,
-        fmt::format(
-            "valid access path root (`Return` or `Argument(...)`), got `{}`",
-            root_string));
-  }
-
+  auto root = RootTemplate::from_json(elements.front());
   Path path;
   for (auto iterator = std::next(elements.begin()), end = elements.end();
        iterator != end;
@@ -142,7 +50,7 @@ AccessPathTemplate AccessPathTemplate::from_json(const Json::Value& value) {
     path.append(PathElement::field(*iterator));
   }
 
-  return AccessPathTemplate(root, path);
+  return AccessPathTemplate(std::move(root), path);
 }
 
 Json::Value AccessPathTemplate::to_json() const {
@@ -262,16 +170,75 @@ void PropagationTemplate::instantiate(
         /* global_transforms */ nullptr);
   }
 
-  model.add_propagation(PropagationConfig(
-      input_port,
-      kind,
-      PathTreeDomain{{output_port.path(), collapse_depth_}},
-      inferred_features_,
-      /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
-      user_features_));
+  model.add_propagation(
+      PropagationConfig(
+          input_port,
+          kind,
+          PathTreeDomain{{output_port.path(), collapse_depth_}},
+          inferred_features_,
+          /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
+          user_features_),
+      *context.heuristics);
 }
 
-SinkTemplate::SinkTemplate(TaintConfig sink, AccessPathTemplate port)
+PortSanitizerTemplate::PortSanitizerTemplate(
+    SanitizerKind sanitizer_kind,
+    RootTemplate port,
+    KindSetAbstractDomain kinds)
+    : sanitizer_kind_(std::move(sanitizer_kind)),
+      port_(std::move(port)),
+      kinds_(std::move(kinds)) {}
+
+PortSanitizerTemplate PortSanitizerTemplate::from_json(
+    const Json::Value& value,
+    Context& context) {
+  JsonValidation::validate_object(value);
+  JsonValidation::check_unexpected_members(
+      value, {"kinds", "port", "sanitize"});
+
+  SanitizerKind sanitizer_kind;
+  auto sanitizer_kind_string =
+      JsonValidation::string(value, /* field */ "sanitize");
+  if (sanitizer_kind_string == "sources") {
+    sanitizer_kind = SanitizerKind::Sources;
+  } else if (sanitizer_kind_string == "sinks") {
+    sanitizer_kind = SanitizerKind::Sinks;
+  } else if (sanitizer_kind_string == "propagations") {
+    sanitizer_kind = SanitizerKind::Propagations;
+  } else {
+    throw JsonValidationError(
+        value,
+        /* field */ "sanitizer",
+        /* expected */ "`sources`, `sinks` or `propagations`");
+  }
+
+  auto port = AccessPathTemplate::from_json(value["port"]);
+
+  auto kinds = KindSetAbstractDomain::bottom();
+  if (value.isMember("kinds")) {
+    kinds = KindSetAbstractDomain();
+    for (const auto& kind_json :
+         JsonValidation::nonempty_array(value, "kinds")) {
+      kinds.add(
+          SourceSinkKind::from_config_json(kind_json, context, sanitizer_kind));
+    }
+  } else {
+    kinds = KindSetAbstractDomain::top();
+  }
+
+  return PortSanitizerTemplate(sanitizer_kind, port.root(), std::move(kinds));
+}
+
+void PortSanitizerTemplate::instantiate(
+    const TemplateVariableMapping& parameter_positions,
+    Model& model) const {
+  auto root = port_.instantiate(parameter_positions);
+  auto sanitizer = Sanitizer(sanitizer_kind_, kinds_);
+
+  model.add_port_sanitizers(SanitizerSet(sanitizer), root);
+}
+
+SinkTemplate::SinkTemplate(TaintConfigTemplate sink, AccessPathTemplate port)
     : sink_(std::move(sink)), port_(std::move(port)) {}
 
 SinkTemplate SinkTemplate::from_json(
@@ -281,18 +248,23 @@ SinkTemplate SinkTemplate::from_json(
 
   JsonValidation::string(value, /* field */ "port");
   return SinkTemplate(
-      TaintConfig::from_json(value, context),
+      TaintConfigTemplate::from_json(value, context),
       AccessPathTemplate::from_json(value["port"]));
 }
 
 void SinkTemplate::instantiate(
+    const Method* method,
+    Context& context,
     const TemplateVariableMapping& parameter_positions,
     Model& model) const {
-  model.add_sink(port_.instantiate(parameter_positions), sink_);
+  model.add_sink(
+      port_.instantiate(parameter_positions),
+      sink_.instantiate(method, context, parameter_positions),
+      *context.heuristics);
 }
 
 ParameterSourceTemplate::ParameterSourceTemplate(
-    TaintConfig source,
+    TaintConfigTemplate source,
     AccessPathTemplate port)
     : source_(std::move(source)), port_(std::move(port)) {}
 
@@ -303,18 +275,23 @@ ParameterSourceTemplate ParameterSourceTemplate::from_json(
 
   JsonValidation::string(value, /* field */ "port");
   return ParameterSourceTemplate(
-      TaintConfig::from_json(value, context),
+      TaintConfigTemplate::from_json(value, context),
       AccessPathTemplate::from_json(value["port"]));
 }
 
 void ParameterSourceTemplate::instantiate(
+    const Method* const method,
+    Context& context,
     const TemplateVariableMapping& parameter_positions,
     Model& model) const {
-  model.add_parameter_source(port_.instantiate(parameter_positions), source_);
+  model.add_parameter_source(
+      port_.instantiate(parameter_positions),
+      source_.instantiate(method, context, parameter_positions),
+      *context.heuristics);
 }
 
 GenerationTemplate::GenerationTemplate(
-    TaintConfig source,
+    TaintConfigTemplate source,
     AccessPathTemplate port)
     : source_(std::move(source)), port_(std::move(port)) {}
 
@@ -325,14 +302,19 @@ GenerationTemplate GenerationTemplate::from_json(
 
   JsonValidation::string(value, /* field */ "port");
   return GenerationTemplate(
-      TaintConfig::from_json(value, context),
+      TaintConfigTemplate::from_json(value, context),
       AccessPathTemplate::from_json(value["port"]));
 }
 
 void GenerationTemplate::instantiate(
+    const Method* method,
+    Context& context,
     const TemplateVariableMapping& parameter_positions,
     Model& model) const {
-  model.add_generation(port_.instantiate(parameter_positions), source_);
+  model.add_generation(
+      port_.instantiate(parameter_positions),
+      source_.instantiate(method, context, parameter_positions),
+      *context.heuristics);
 }
 
 SourceTemplate::SourceTemplate(TaintConfig source, AccessPathTemplate port)
@@ -351,11 +333,14 @@ SourceTemplate SourceTemplate::from_json(
 
 void SourceTemplate::instantiate(
     const TemplateVariableMapping& parameter_positions,
-    Model& model) const {
+    Model& model,
+    const Heuristics& heuristics) const {
   if (port_.root().is_argument()) {
-    model.add_parameter_source(port_.instantiate(parameter_positions), source_);
+    model.add_parameter_source(
+        port_.instantiate(parameter_positions), source_, heuristics);
   } else {
-    model.add_generation(port_.instantiate(parameter_positions), source_);
+    model.add_generation(
+        port_.instantiate(parameter_positions), source_, heuristics);
   }
 }
 
@@ -502,6 +487,7 @@ ForAllParameters::ForAllParameters(
     std::vector<GenerationTemplate> generation_templates,
     std::vector<SourceTemplate> source_templates,
     std::vector<PropagationTemplate> propagation_templates,
+    std::vector<PortSanitizerTemplate> port_sanitizers,
     std::vector<AttachToSourcesTemplate> attach_to_sources_templates,
     std::vector<AttachToSinksTemplate> attach_to_sinks_templates,
     std::vector<AttachToPropagationsTemplate> attach_to_propagations_templates,
@@ -514,6 +500,7 @@ ForAllParameters::ForAllParameters(
       generation_templates_(std::move(generation_templates)),
       source_templates_(std::move(source_templates)),
       propagation_templates_(std::move(propagation_templates)),
+      port_sanitizers_(std::move(port_sanitizers)),
       attach_to_sources_templates_(std::move(attach_to_sources_templates)),
       attach_to_sinks_templates_(std::move(attach_to_sinks_templates)),
       attach_to_propagations_templates_(
@@ -534,6 +521,7 @@ ForAllParameters ForAllParameters::from_json(
        "generations",
        "sources",
        "propagation",
+       "sanitizers",
        "attach_to_sources",
        "attach_to_sinks",
        "attach_to_propagations",
@@ -545,6 +533,7 @@ ForAllParameters ForAllParameters::from_json(
   std::vector<GenerationTemplate> generation_templates;
   std::vector<SourceTemplate> source_templates;
   std::vector<PropagationTemplate> propagation_templates;
+  std::vector<PortSanitizerTemplate> port_sanitizers;
   std::vector<AttachToSourcesTemplate> attach_to_sources_templates;
   std::vector<AttachToSinksTemplate> attach_to_sinks_templates;
   std::vector<AttachToPropagationsTemplate> attach_to_propagations_templates;
@@ -588,6 +577,12 @@ ForAllParameters ForAllParameters::from_json(
         PropagationTemplate::from_json(propagation_value, context));
   }
 
+  for (auto sanitizer_value :
+       JsonValidation::null_or_array(value, /* field */ "sanitizers")) {
+    port_sanitizers.push_back(
+        PortSanitizerTemplate::from_json(sanitizer_value, context));
+  }
+
   for (auto attach_to_sources_value :
        JsonValidation::null_or_array(value, /* field */ "attach_to_sources")) {
     attach_to_sources_templates.push_back(
@@ -622,6 +617,7 @@ ForAllParameters ForAllParameters::from_json(
       generation_templates,
       source_templates,
       propagation_templates,
+      port_sanitizers,
       attach_to_sources_templates,
       attach_to_sinks_templates,
       attach_to_propagations_templates,
@@ -646,24 +642,31 @@ bool ForAllParameters::instantiate(
       variable_mapping.insert(variable_, index);
 
       for (const auto& sink_template : sink_templates_) {
-        sink_template.instantiate(variable_mapping, model);
+        sink_template.instantiate(method, context, variable_mapping, model);
         updated = true;
       }
       for (const auto& parameter_source_template :
            parameter_source_templates_) {
-        parameter_source_template.instantiate(variable_mapping, model);
+        parameter_source_template.instantiate(
+            method, context, variable_mapping, model);
         updated = true;
       }
       for (const auto& generation_template : generation_templates_) {
-        generation_template.instantiate(variable_mapping, model);
+        generation_template.instantiate(
+            method, context, variable_mapping, model);
         updated = true;
       }
       for (const auto& source_template : source_templates_) {
-        source_template.instantiate(variable_mapping, model);
+        source_template.instantiate(
+            variable_mapping, model, *context.heuristics);
         updated = true;
       }
       for (const auto& propagation_template : propagation_templates_) {
         propagation_template.instantiate(variable_mapping, model, context);
+        updated = true;
+      }
+      for (const auto& port_sanitizer : port_sanitizers_) {
+        port_sanitizer.instantiate(variable_mapping, model);
         updated = true;
       }
       for (const auto& attach_to_sources_template :
@@ -693,8 +696,15 @@ bool ForAllParameters::instantiate(
 
 ModelTemplate::ModelTemplate(
     const Model& model,
-    std::vector<ForAllParameters> for_all_parameters)
-    : model_(model), for_all_parameters_(std::move(for_all_parameters)) {
+    std::vector<ForAllParameters> for_all_parameters,
+    std::vector<std::pair<AccessPath, TaintConfigTemplate>> generations,
+    std::vector<std::pair<AccessPath, TaintConfigTemplate>> parameter_sources,
+    std::vector<std::pair<AccessPath, TaintConfigTemplate>> sinks)
+    : model_(model),
+      for_all_parameters_(std::move(for_all_parameters)),
+      generations_(std::move(generations)),
+      parameter_sources_(std::move(parameter_sources)),
+      sinks_(std::move(sinks)) {
   mt_assert(model.method() == nullptr);
 }
 
@@ -716,6 +726,25 @@ std::optional<Model> ModelTemplate::instantiate(
     updated = updated || result;
   }
 
+  for (const auto& [port, taint_config_template] : generations_) {
+    model.add_generation(
+        port,
+        taint_config_template.instantiate(method, context),
+        *context.heuristics);
+  }
+  for (const auto& [port, taint_config_template] : parameter_sources_) {
+    model.add_parameter_source(
+        port,
+        taint_config_template.instantiate(method, context),
+        *context.heuristics);
+  }
+  for (const auto& [port, taint_config_template] : sinks_) {
+    model.add_sink(
+        port,
+        taint_config_template.instantiate(method, context),
+        *context.heuristics);
+  }
+
   // An instantiated model can be nonempty even when it is instantiated from
   // an empty model and no new sinks/generations/propagations/sources were
   // introduced by for_all_parameters, because it is possible that a model has
@@ -728,12 +757,36 @@ std::optional<Model> ModelTemplate::instantiate(
         "Method `{}` generates no new sinks/generations/propagations/sources from {} for_all_parameters constraints:\nInstantiated model: {}.\nModel template: {}.",
         method->show(),
         for_all_parameters_.size(),
-        JsonValidation::to_styled_string(
+        JsonWriter::to_styled_string(
             model.to_json(context.options->export_origins_mode())),
-        JsonValidation::to_styled_string(
+        JsonWriter::to_styled_string(
             model_.to_json(context.options->export_origins_mode())));
     return std::nullopt;
   }
+}
+
+/**
+ * Helper to convert TaintConfigTemplate JSON objects in bulk to actual
+ * TaintConfigTemplate instances using TaintConfigTemplate::from_json.
+ * Explicitly demands move semantics because it is only used in one location
+ * where that is the intent.
+ */
+static std::vector<std::pair<AccessPath, TaintConfigTemplate>>
+taint_config_template_from_json(
+    Context& context,
+    std::vector<std::pair<AccessPath, Json::Value>>&& json) {
+  std::vector<std::pair<AccessPath, TaintConfigTemplate>>
+      taint_config_templates;
+  std::transform(
+      std::make_move_iterator(json.begin()),
+      std::make_move_iterator(json.end()),
+      std::back_inserter(taint_config_templates),
+      [&context](std::pair<AccessPath, Json::Value>&& port_and_json) {
+        return std::make_pair(
+            std::move(port_and_json.first),
+            TaintConfigTemplate::from_json(port_and_json.second, context));
+      });
+  return taint_config_templates;
 }
 
 ModelTemplate ModelTemplate::from_json(
@@ -745,6 +798,7 @@ ModelTemplate ModelTemplate::from_json(
       {"for_all_parameters",
        "modes",
        "freeze",
+       "global_config_overrides",
        "generations",
        "parameter_sources",
        "sources",
@@ -767,13 +821,27 @@ ModelTemplate ModelTemplate::from_json(
         ForAllParameters::from_json(value, context));
   }
 
+  std::vector<std::pair<AccessPath, Json::Value>> generation_templates;
+  std::vector<std::pair<AccessPath, Json::Value>> parameter_source_templates;
+  std::vector<std::pair<AccessPath, Json::Value>> sink_templates;
+  Model::read_taint_configs_from_json(
+      model,
+      generation_templates,
+      parameter_source_templates,
+      sink_templates,
+      TaintConfigTemplate::is_template);
+
   return ModelTemplate(
-      Model::from_json(
+      Model::from_config_json(
           /* method */ nullptr,
           model,
           context,
           /* check_unexpected_members */ false),
-      std::move(for_all_parameters));
+      std::move(for_all_parameters),
+      taint_config_template_from_json(context, std::move(generation_templates)),
+      taint_config_template_from_json(
+          context, std::move(parameter_source_templates)),
+      taint_config_template_from_json(context, std::move(sink_templates)));
 }
 
 } // namespace marianatrench

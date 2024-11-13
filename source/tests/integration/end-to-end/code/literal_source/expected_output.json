@@ -5,8 +5,13 @@
   "sources" : 
   [
     {
-      "call_info" : "Declaration",
-      "kind" : "GoogleAPIKey"
+      "kind" : "GoogleAPIKey",
+      "origins" : 
+      [
+        {
+          "method" : "AI[0-9A-Z]{16}"
+        }
+      ]
     }
   ]
 }
@@ -16,8 +21,13 @@
   "sources" : 
   [
     {
-      "call_info" : "Declaration",
-      "kind" : "Regex"
+      "kind" : "Regex",
+      "origins" : 
+      [
+        {
+          "method" : "SELECT \\*.*"
+        }
+      ]
     }
   ]
 }
@@ -274,10 +284,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -293,10 +307,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -312,10 +330,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -349,10 +371,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -368,10 +394,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -381,10 +411,14 @@
           ]
         },
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -418,10 +452,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -437,10 +475,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -450,10 +492,14 @@
           ]
         },
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -487,10 +533,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -506,10 +556,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -519,10 +573,14 @@
           ]
         },
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -555,10 +613,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -574,10 +636,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -593,10 +659,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -630,10 +700,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -667,10 +741,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -703,10 +781,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -722,10 +804,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -741,10 +827,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -939,10 +1029,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -968,10 +1062,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "Logging",
               "origins" : 
               [
@@ -1010,10 +1107,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "AttackerControlledInput",
               "origins" : 
               [
@@ -1049,10 +1149,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "Partial:TestSink:regex",
               "origins" : 
               [
@@ -1071,10 +1174,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "Partial:TestSink:aci",
               "origins" : 
               [
@@ -1105,14 +1211,25 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(0)",
+            "position" : 
+            {
+              "end" : 21,
+              "line" : 92,
+              "path" : "RegexSource.java",
+              "start" : 16
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "Logging",
               "origins" : 
@@ -1124,42 +1241,44 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/marianatrench/integrationtests/Origin;.sink:(Ljava/lang/Object;)V",
-                "port" : "Argument(0)"
-              }
-            ],
-            "method" : "Lcom/facebook/marianatrench/integrationtests/Origin;.sink:(Ljava/lang/Object;)V",
-            "position" : 
-            {
-              "end" : 21,
-              "line" : 92,
-              "path" : "RegexSource.java",
-              "start" : 16
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "position" : 
+            {
+              "line" : 91,
+              "path" : "RegexSource.java"
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
-              "kind" : "GoogleAPIKey"
+              "callee_interval" : 
+              [
+                -2147483648,
+                2147483647
+              ],
+              "kind" : "GoogleAPIKey",
+              "origins" : 
+              [
+                {
+                  "method" : "AI[0-9A-Z]{16}"
+                }
+              ],
+              "preserves_type_context" : true
             }
           ]
         }
       ]
     }
   ],
-  "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.testRegexSourceGoogleApiKeyIssue:()V",
+  "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.testRegexSourceGoogleApiKeyIssue:(Ljava/lang/String;)V",
   "position" : 
   {
     "line" : 90,
@@ -1181,14 +1300,25 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(1)",
+            "position" : 
+            {
+              "end" : 18,
+              "line" : 28,
+              "path" : "RegexSource.java",
+              "start" : 16
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "Partial:TestSink:aci",
               "origins" : 
@@ -1201,38 +1331,31 @@
               "preserves_type_context" : true,
               "triggered_rule" : 1
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.sink:(Ljava/lang/String;Ljava/lang/String;)V",
-                "port" : "Argument(1)"
-              }
-            ],
-            "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.sink:(Ljava/lang/String;Ljava/lang/String;)V",
-            "position" : 
-            {
-              "end" : 18,
-              "line" : 28,
-              "path" : "RegexSource.java",
-              "start" : 16
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Return",
+            "position" : 
+            {
+              "end" : 42,
+              "line" : 27,
+              "path" : "RegexSource.java",
+              "start" : 17
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "AttackerControlledInput",
               "origins" : 
@@ -1244,25 +1367,7 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.getAttackerControlledInput:()Ljava/lang/String;",
-                "port" : "Return"
-              }
-            ],
-            "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.getAttackerControlledInput:()Ljava/lang/String;",
-            "position" : 
-            {
-              "end" : 42,
-              "line" : 27,
-              "path" : "RegexSource.java",
-              "start" : 17
-            }
-          }
+          ]
         }
       ]
     }
@@ -1293,6 +1398,18 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(1)",
+            "position" : 
+            {
+              "end" : 64,
+              "line" : 85,
+              "path" : "RegexSource.java",
+              "start" : 62
+            }
+          },
           "kinds" : 
           [
             {
@@ -1300,11 +1417,10 @@
               [
                 "via-array"
               ],
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "Partial:TestSink:aci",
               "origins" : 
@@ -1317,38 +1433,31 @@
               "preserves_type_context" : true,
               "triggered_rule" : 1
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Ljava/text/MessageFormat;.format:(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
-                "port" : "Argument(1)"
-              }
-            ],
-            "method" : "Ljava/text/MessageFormat;.format:(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
-            "position" : 
-            {
-              "end" : 64,
-              "line" : 85,
-              "path" : "RegexSource.java",
-              "start" : 62
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Return",
+            "position" : 
+            {
+              "end" : 42,
+              "line" : 84,
+              "path" : "RegexSource.java",
+              "start" : 17
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "AttackerControlledInput",
               "origins" : 
@@ -1375,25 +1484,7 @@
               "line" : 85,
               "start" : 0
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.getAttackerControlledInput:()Ljava/lang/String;",
-                "port" : "Return"
-              }
-            ],
-            "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.getAttackerControlledInput:()Ljava/lang/String;",
-            "position" : 
-            {
-              "end" : 42,
-              "line" : 84,
-              "path" : "RegexSource.java",
-              "start" : 17
-            }
-          }
+          ]
         }
       ]
     }
@@ -1428,14 +1519,25 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(1)",
+            "position" : 
+            {
+              "end" : 19,
+              "line" : 70,
+              "path" : "RegexSource.java",
+              "start" : 17
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "Partial:TestSink:regex",
               "origins" : 
@@ -1448,42 +1550,44 @@
               "preserves_type_context" : true,
               "triggered_rule" : 1
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Ljava/lang/StringBuilder;.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;",
-                "port" : "Argument(1)"
-              }
-            ],
-            "method" : "Ljava/lang/StringBuilder;.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;",
-            "position" : 
-            {
-              "end" : 19,
-              "line" : 70,
-              "path" : "RegexSource.java",
-              "start" : 17
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "position" : 
+            {
+              "line" : 67,
+              "path" : "RegexSource.java"
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
-              "kind" : "Regex"
+              "callee_interval" : 
+              [
+                -2147483648,
+                2147483647
+              ],
+              "kind" : "Regex",
+              "origins" : 
+              [
+                {
+                  "method" : "SELECT \\*.*"
+                }
+              ],
+              "preserves_type_context" : true
             }
           ]
         }
       ]
     }
   ],
-  "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.testRegexSourceStringBuilderAciFirstIssue:()V",
+  "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.testRegexSourceStringBuilderAciFirstIssue:(Ljava/lang/String;)V",
   "position" : 
   {
     "line" : 66,
@@ -1505,14 +1609,25 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(1)",
+            "position" : 
+            {
+              "end" : 22,
+              "line" : 61,
+              "path" : "RegexSource.java",
+              "start" : 17
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "Partial:TestSink:aci",
               "origins" : 
@@ -1525,38 +1640,31 @@
               "preserves_type_context" : true,
               "triggered_rule" : 1
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Ljava/lang/StringBuilder;.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;",
-                "port" : "Argument(1)"
-              }
-            ],
-            "method" : "Ljava/lang/StringBuilder;.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;",
-            "position" : 
-            {
-              "end" : 22,
-              "line" : 61,
-              "path" : "RegexSource.java",
-              "start" : 17
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Return",
+            "position" : 
+            {
+              "end" : 42,
+              "line" : 59,
+              "path" : "RegexSource.java",
+              "start" : 17
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "AttackerControlledInput",
               "origins" : 
@@ -1568,25 +1676,7 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.getAttackerControlledInput:()Ljava/lang/String;",
-                "port" : "Return"
-              }
-            ],
-            "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.getAttackerControlledInput:()Ljava/lang/String;",
-            "position" : 
-            {
-              "end" : 42,
-              "line" : 59,
-              "path" : "RegexSource.java",
-              "start" : 17
-            }
-          }
+          ]
         }
       ]
     }
@@ -1613,14 +1703,25 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(1)",
+            "position" : 
+            {
+              "end" : 0,
+              "line" : 52,
+              "path" : "RegexSource.java",
+              "start" : 0
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "Partial:TestSink:regex",
               "origins" : 
@@ -1633,42 +1734,44 @@
               "preserves_type_context" : true,
               "triggered_rule" : 1
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Ljava/lang/StringBuilder;.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;",
-                "port" : "Argument(1)"
-              }
-            ],
-            "method" : "Ljava/lang/StringBuilder;.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;",
-            "position" : 
-            {
-              "end" : 0,
-              "line" : 52,
-              "path" : "RegexSource.java",
-              "start" : 0
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "position" : 
+            {
+              "line" : 49,
+              "path" : "RegexSource.java"
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
-              "kind" : "Regex"
+              "callee_interval" : 
+              [
+                -2147483648,
+                2147483647
+              ],
+              "kind" : "Regex",
+              "origins" : 
+              [
+                {
+                  "method" : "SELECT \\*.*"
+                }
+              ],
+              "preserves_type_context" : true
             }
           ]
         }
       ]
     }
   ],
-  "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.testRegexSourceStringConcatAciFirstIssue:()V",
+  "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.testRegexSourceStringConcatAciFirstIssue:(Ljava/lang/String;)V",
   "position" : 
   {
     "line" : 48,
@@ -1690,14 +1793,25 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(1)",
+            "position" : 
+            {
+              "end" : 0,
+              "line" : 43,
+              "path" : "RegexSource.java",
+              "start" : 0
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "Partial:TestSink:aci",
               "origins" : 
@@ -1710,38 +1824,31 @@
               "preserves_type_context" : true,
               "triggered_rule" : 1
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Ljava/lang/StringBuilder;.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;",
-                "port" : "Argument(1)"
-              }
-            ],
-            "method" : "Ljava/lang/StringBuilder;.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;",
-            "position" : 
-            {
-              "end" : 0,
-              "line" : 43,
-              "path" : "RegexSource.java",
-              "start" : 0
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Return",
+            "position" : 
+            {
+              "end" : 42,
+              "line" : 41,
+              "path" : "RegexSource.java",
+              "start" : 17
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "AttackerControlledInput",
               "origins" : 
@@ -1753,25 +1860,7 @@
               ],
               "preserves_type_context" : true
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.getAttackerControlledInput:()Ljava/lang/String;",
-                "port" : "Return"
-              }
-            ],
-            "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.getAttackerControlledInput:()Ljava/lang/String;",
-            "position" : 
-            {
-              "end" : 42,
-              "line" : 41,
-              "path" : "RegexSource.java",
-              "start" : 17
-            }
-          }
+          ]
         }
       ]
     }
@@ -1802,6 +1891,18 @@
       "sinks" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Argument(1)",
+            "position" : 
+            {
+              "end" : 28,
+              "line" : 78,
+              "path" : "RegexSource.java",
+              "start" : 26
+            }
+          },
           "kinds" : 
           [
             {
@@ -1809,11 +1910,10 @@
               [
                 "via-array"
               ],
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "Partial:TestSink:aci",
               "origins" : 
@@ -1826,38 +1926,31 @@
               "preserves_type_context" : true,
               "triggered_rule" : 1
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Ljava/lang/String;.format:(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
-                "port" : "Argument(1)"
-              }
-            ],
-            "method" : "Ljava/lang/String;.format:(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
-            "position" : 
-            {
-              "end" : 28,
-              "line" : 78,
-              "path" : "RegexSource.java",
-              "start" : 26
-            }
-          }
+          ]
         }
       ],
       "sources" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Origin",
+            "port" : "Return",
+            "position" : 
+            {
+              "end" : 42,
+              "line" : 77,
+              "path" : "RegexSource.java",
+              "start" : 17
+            }
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Origin",
               "callee_interval" : 
               [
-                36,
-                37
+                35,
+                36
               ],
               "kind" : "AttackerControlledInput",
               "origins" : 
@@ -1884,25 +1977,7 @@
               "line" : 78,
               "start" : 0
             }
-          ],
-          "origin" : 
-          {
-            "leaves" : 
-            [
-              {
-                "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.getAttackerControlledInput:()Ljava/lang/String;",
-                "port" : "Return"
-              }
-            ],
-            "method" : "Lcom/facebook/marianatrench/integrationtests/RegexSource;.getAttackerControlledInput:()Ljava/lang/String;",
-            "position" : 
-            {
-              "end" : 42,
-              "line" : 77,
-              "path" : "RegexSource.java",
-              "start" : 17
-            }
-          }
+          ]
         }
       ]
     }
@@ -2020,10 +2095,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2137,10 +2216,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2156,10 +2239,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2192,10 +2279,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2211,10 +2302,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2233,10 +2328,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "Partial:TestSink:regex",
               "origins" : 
               [
@@ -2255,10 +2353,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "Partial:TestSink:aci",
               "origins" : 
               [
@@ -2359,10 +2460,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2378,10 +2483,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -2400,10 +2509,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "Partial:TestSink:aci",
               "origins" : 
               [
@@ -2414,7 +2526,6 @@
               ]
             },
             {
-              "call_info" : "Declaration",
               "kind" : "Partial:TestSink:regex",
               "origins" : 
               [
@@ -2433,10 +2544,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "Partial:TestSink:aci",
               "origins" : 
               [
@@ -2447,7 +2561,6 @@
               ]
             },
             {
-              "call_info" : "Declaration",
               "kind" : "Partial:TestSink:regex",
               "origins" : 
               [
@@ -2476,10 +2589,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(0)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(0)",
               "output_paths" : 
               {
@@ -2526,10 +2643,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2545,10 +2666,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Return"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalReturn",
               "output_paths" : 
               {
@@ -2567,10 +2692,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "Partial:TestSink:regex",
               "origins" : 
               [
@@ -2589,10 +2717,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "Partial:TestSink:aci",
               "origins" : 
               [
@@ -2629,5 +2760,194 @@
   "position" : 
   {
     "line" : 14
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.<init>:()V",
+  "position" : 
+  {
+    "line" : 10
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkExpressionValueIsNotNull:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 25
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkFieldIsNotNull:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 56
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkFieldIsNotNull:(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 50
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkHasClass:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 74
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkHasClass:(Ljava/lang/String;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 78
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkNotNull:(Ljava/lang/Object;)V",
+  "position" : 
+  {
+    "line" : 13
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkNotNull:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 19
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkNotNullExpressionValue:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 31
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 68
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkParameterIsNotNull:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 62
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkReturnedValueIsNotNull:(Ljava/lang/Object;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 44
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.checkReturnedValueIsNotNull:(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 38
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwAssert:()V",
+  "position" : 
+  {
+    "line" : 106
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwAssert:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 110
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwIllegalArgument:()V",
+  "position" : 
+  {
+    "line" : 114
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwIllegalArgument:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 118
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwIllegalState:()V",
+  "position" : 
+  {
+    "line" : 122
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwIllegalState:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 126
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwJavaNpe:()V",
+  "position" : 
+  {
+    "line" : 90
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwJavaNpe:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 94
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwNpe:()V",
+  "position" : 
+  {
+    "line" : 82
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwNpe:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 86
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwUndefinedForReified:()V",
+  "position" : 
+  {
+    "line" : 130
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwUndefinedForReified:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 134
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwUninitializedProperty:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 98
+  }
+}
+{
+  "method" : "Lkotlin/jvm/internal/Intrinsics;.throwUninitializedPropertyAccessException:(Ljava/lang/String;)V",
+  "position" : 
+  {
+    "line" : 102
   }
 }

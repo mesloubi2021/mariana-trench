@@ -37,7 +37,7 @@ class ClassProperties final {
   DELETE_COPY_CONSTRUCTORS_AND_ASSIGNMENTS(ClassProperties)
 
  private:
-  void emplace_classes(
+  void update_classes(
       std::unordered_map<std::string_view, ExportedKind>& map,
       const ComponentTagInfo& tag_info);
   FeatureSet get_manifest_features(
@@ -46,7 +46,6 @@ class ClassProperties final {
       const;
   bool is_dfa_public(std::string_view class_name) const;
   bool has_inline_permissions(std::string_view class_name) const;
-  bool has_privacy_decision(const Method* method) const;
 
   FeatureSet get_class_features(
       std::string_view clazz,
@@ -55,19 +54,15 @@ class ClassProperties final {
       size_t dependency_depth = 0) const;
   FeatureSet compute_transitive_class_features(
       const Method* method,
-      const NamedKind* kind) const;
+      const NamedKind* kind,
+      const Heuristics& heuristics) const;
 
  public:
-  /* A set of features to add to sources propagated from callee to caller. */
-  FeatureMayAlwaysSet propagate_features(
-      const Method* caller,
-      const Method* callee,
-      const FeatureFactory& feature_factory) const;
-
   /* A set of features to add on issues found in the given method. */
   FeatureMayAlwaysSet issue_features(
       const Method* method,
-      std::unordered_set<const Kind*> kinds) const;
+      const std::unordered_set<const Kind*>& kinds,
+      const Heuristics& heuristics) const;
 
   static DexClass* MT_NULLABLE get_service_from_stub(const DexClass* clazz);
 

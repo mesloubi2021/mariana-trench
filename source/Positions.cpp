@@ -6,13 +6,13 @@
  */
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <unordered_map>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/find_iterator.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/operations.hpp>
+#include <boost/algorithm/string/replace.hpp>
 #include <fmt/format.h>
 #include <re2/re2.h>
 
@@ -25,6 +25,7 @@
 #include <Walkers.h>
 
 #include <mariana-trench/Assert.h>
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/JsonValidation.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/Positions.h>
@@ -75,13 +76,14 @@ GrepoPaths get_grepo_paths(
     if (splits.size() != 3) {
       WARNING(
           2,
-          "Invalid line. Expected: `<REPO_PROJECT>:<path/to/repo/root>:<path/to/file>`. Skipping...");
+          "Invalid line. Expected: `<REPO_PATH>:<path/to/repo/root>:<path/to/file>`. Skipping...");
       continue;
     }
 
-    // Find the project name
+    // Find the prefix
+    auto lookup_key = boost::algorithm::replace_all_copy(splits[0], "/", "-");
     const auto& metadata =
-        JsonValidation::null_or_object(metadata_json, splits[0]);
+        JsonValidation::null_or_object(metadata_json, lookup_key);
     if (metadata.isNull()) {
       WARNING(
           2, "Could not find metadata for repo: `{}`. Skipping...", splits[0]);
@@ -93,7 +95,9 @@ GrepoPaths get_grepo_paths(
     actual_to_repo_paths.emplace(
         absolute_path,
         fmt::format(
-            "{}/{}", JsonValidation::string(metadata, "project"), splits[2]));
+            "{}/{}",
+            JsonValidation::string(metadata, "sapp_repo_key"),
+            splits[2]));
   }
 
   return GrepoPaths{actual_paths, actual_to_repo_paths};
@@ -241,11 +245,11 @@ Positions::Positions(const Options& options, const DexStoresVector& stores) {
         options.source_root_directory());
 
     // Save current path
-    auto current_path = boost::filesystem::current_path();
-    boost::filesystem::path source_root_directory{
+    auto current_path = std::filesystem::current_path();
+    std::filesystem::path source_root_directory{
         options.source_root_directory()};
     // Switch to source root directory.
-    boost::filesystem::current_path(source_root_directory);
+    std::filesystem::current_path(source_root_directory);
 
     auto exclude_directories = options.source_exclude_directories();
     for (auto& exclude_directory : exclude_directories) {
@@ -259,7 +263,7 @@ Positions::Positions(const Options& options, const DexStoresVector& stores) {
 
     if (auto grepo_metadata_path = options.grepo_metadata_path();
         !grepo_metadata_path.empty()) {
-      auto metadata_json = JsonValidation::parse_json_file(grepo_metadata_path);
+      auto metadata_json = JsonReader::parse_json_file(grepo_metadata_path);
       JsonValidation::validate_object(metadata_json);
 
       // This command lists all tracked java and kotlin files in all sub
@@ -267,15 +271,15 @@ Positions::Positions(const Options& options, const DexStoresVector& stores) {
       // `test/*` directories.
       //
       // The output format is:
-      //   <REPO_PROJECT>:<path/to/root/of/subrepo>:<path/to/file/within/subrepo>
+      //   <REPO_PATH>:<path/to/root/of/subrepo>:<path/to/file/within/subrepo>
       // - The absolute path on the filesystem is:
       //   <path/to/root/of/subrepo>/<path/to/file/within/subrepo>
-      // - <REPO_PROJECT> is used to look up the grepo_metadata_json for the
-      //   "project" prefix.
+      // - <REPO_PATH> is used to look up the grepo_metadata_json for the
+      //   <prefix> to use for sapp.
       // - The final path for sapp is:
-      //   <"project"prefix>/<path/to/file/within/subrepo>
+      //   <prefix>/<path/to/file/within/subrepo>
       std::string repo_command =
-          "repo forall -c 'git ls-files -- '\''*java'\'' '\''*kt'\'' '\'':!:test/*'\'' | xargs -n1 printf \"$REPO_PROJECT:$PWD:%s\\n\"'";
+          "repo forall -c 'git ls-files -- '\''*java'\'' '\''*kt'\'' '\'':!:test/*'\'' | xargs -n1 printf \"$REPO_PATH:$PWD:%s\\n\"'";
 
       int return_code = -1;
       std::string output = execute_and_catch_output(repo_command, return_code);
@@ -336,7 +340,7 @@ Positions::Positions(const Options& options, const DexStoresVector& stores) {
     }
 
     // Switch back to current path.
-    boost::filesystem::current_path(current_path);
+    std::filesystem::current_path(current_path);
     Timer method_paths_timer;
     LOG(2, "Indexing method paths...");
 
@@ -481,6 +485,21 @@ const Position* Positions::get(
 }
 
 const Position* Positions::get(
+    const std::string* MT_NULLABLE path,
+    int line,
+    int start,
+    int end) const {
+  auto new_position = Position(
+      /* path */ path != nullptr ? paths_.insert(*path).first : nullptr,
+      /* line */ line,
+      /* port */ std::nullopt,
+      /* instruction */ nullptr,
+      /* start */ start,
+      /* end */ end);
+  return positions_.insert(new_position).first;
+};
+
+const Position* Positions::get(
     const Position* position,
     std::optional<Root> port,
     const IRInstruction* instruction) const {
@@ -508,6 +527,11 @@ Positions::get(const Position* position, int line, int start, int end) const {
 
 const Position* Positions::unknown() const {
   return positions_.insert(Position(nullptr, k_unknown_line)).first;
+}
+
+const std::string* MT_NULLABLE
+Positions::get_path(const DexMethod* method) const {
+  return method_to_path_.get(method, /* default */ nullptr);
 }
 
 } // namespace marianatrench

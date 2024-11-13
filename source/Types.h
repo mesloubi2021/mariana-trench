@@ -7,12 +7,12 @@
 
 #pragma once
 
+#include <unordered_set>
+
 #include <boost/container/flat_map.hpp>
 
 #include <DexClass.h>
 #include <GlobalTypeAnalyzer.h>
-#include <ReflectionAnalysis.h>
-#include <TypeInference.h>
 
 #include <mariana-trench/Access.h>
 #include <mariana-trench/Compiler.h>
@@ -23,7 +23,44 @@
 
 namespace marianatrench {
 
-using TypeEnvironment = boost::container::flat_map<Register, const DexType*>;
+class TypeValue final {
+ public:
+  explicit TypeValue(const DexType* dex_type);
+
+  explicit TypeValue(
+      const DexType* singleton_type,
+      std::unordered_set<const DexType*> small_set_dex_types);
+
+  INCLUDE_DEFAULT_COPY_CONSTRUCTORS_AND_ASSIGNMENTS(TypeValue)
+
+  void set_singleton_type(const DexType* singleton_type) {
+    singleton_type_ = singleton_type;
+  }
+
+  void set_local_extends(std::unordered_set<const DexType*> dex_types) {
+    local_extends_ = std::move(dex_types);
+  }
+
+  const DexType* singleton_type() const {
+    return singleton_type_;
+  }
+
+  const std::unordered_set<const DexType*>& local_extends() const {
+    return local_extends_;
+  }
+
+  friend std::ostream& operator<<(
+      std::ostream& out,
+      const TypeValue& type_value);
+
+ private:
+  const DexType* singleton_type_;
+  // When non-empty, this holds the subset of possible derived
+  // types tracked by global type analysis' SmallSetDexTypeDomain.
+  std::unordered_set<const DexType*> local_extends_;
+};
+
+using TypeEnvironment = boost::container::flat_map<Register, TypeValue>;
 
 using TypeEnvironments =
     std::unordered_map<const IRInstruction*, TypeEnvironment>;
@@ -53,6 +90,11 @@ class Types final {
       const IRInstruction* instruction,
       Register register_id) const;
 
+  const std::unordered_set<const DexType*>& register_local_extends(
+      const Method* method,
+      const IRInstruction* instruction,
+      Register register_id) const;
+
   /**
    * Get the type of the given source of the given instruction.
    *
@@ -70,6 +112,15 @@ class Types final {
    */
   const DexType* MT_NULLABLE
   receiver_type(const Method* method, const IRInstruction* instruction) const;
+
+  /**
+   * Get local_extends for receiver type of an invoke instruction.
+   *
+   * Returns empty set if not found.
+   */
+  const std::unordered_set<const DexType*>& receiver_local_extends(
+      const Method* method,
+      const IRInstruction* instruction) const;
 
   /**
    * Get the resolved DexType for reflection arguments.

@@ -1,5 +1,8 @@
 [
   {
+    "name": "ActivityResultGenerator"
+  },
+  {
     "name": "ActivitySourceGenerator"
   },
   {
@@ -34,6 +37,9 @@
   },
   {
     "name": "join_override_generator"
+  },
+  {
+    "name": "ReflectionGenerator"
   },
   {
     "name": "SensitiveCookieDataGenerator"

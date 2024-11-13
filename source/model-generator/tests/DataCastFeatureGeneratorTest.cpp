@@ -5,7 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#include <boost/filesystem.hpp>
+#include <filesystem>
+
 #include <gtest/gtest.h>
 
 #include <mariana-trench/Redex.h>
@@ -17,7 +18,7 @@ using namespace marianatrench;
 
 namespace {
 
-boost::filesystem::path models_file_path() {
+std::filesystem::path models_file_path() {
   return test::find_repository_root() /
       "configuration/model-generators/propagations/DataCastFeatureGenerator.models";
 }
@@ -47,8 +48,9 @@ TEST_F(DataCastFeatureGeneratorTest, CastToInt) {
   auto expected_model = Model(
       /* method */ method,
       context,
-      /* modes */ Model::Mode::Normal,
-      /* frozen */ Model::FreezeKind::None,
+      /* modes */ {},
+      /* frozen */ {},
+      /* config_overrides */ {},
       /* generations */ std::vector<std::pair<AccessPath, TaintConfig>>{},
       /* parameter_sources */ {},
       /* sinks */ {},
@@ -92,8 +94,9 @@ TEST_F(DataCastFeatureGeneratorTest, CastToBool) {
   auto expected_model = Model(
       /* method */ method,
       context,
-      /* modes */ Model::Mode::Normal,
-      /* frozen */ Model::FreezeKind::None,
+      /* modes */ {},
+      /* frozen */ {},
+      /* config_overrides */ {},
       /* generations */ std::vector<std::pair<AccessPath, TaintConfig>>{},
       /* parameter_sources */ {},
       /* sinks */ {},

@@ -13,52 +13,23 @@
           "taint" :
           [
             {
-              "kinds" :
-              [
-                {
-                  "call_info" : "Origin",
-                  "callee_interval" :
-                  [
-                    6,
-                    7
-                  ],
-                  "kind" : "TestSource",
-                  "origins" :
-                  [
-                    {
-                      "method" : "LSource;.source:()LData;",
-                      "port" : "Return"
-                    }
-                  ],
-                  "preserves_type_context" : true
-                }
-              ],
-              "origin" :
+              "call_info" :
               {
-                "leaves" :
-                [
-                  {
-                    "method" : "LSource;.source:()LData;",
-                    "port" : "Return"
-                  }
-                ],
-                "method" : "LSource;.source:()LData;",
+                "call_kind" : "Origin",
+                "port" : "Return",
                 "position" :
                 {
                   "line" : 2,
                   "path" : "Flow.java"
                 }
-              }
-            },
-            {
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Origin",
                   "callee_interval" :
                   [
-                    6,
-                    7
+                    5,
+                    6
                   ],
                   "kind" : "TestSource",
                   "origins" :
@@ -70,23 +41,38 @@
                   ],
                   "preserves_type_context" : true
                 }
-              ],
-              "origin" :
+              ]
+            },
+            {
+              "call_info" :
               {
-                "leaves" :
-                [
-                  {
-                    "method" : "LSource;.source:()LData;",
-                    "port" : "Return"
-                  }
-                ],
-                "method" : "LSource;.source:()LData;",
+                "call_kind" : "Origin",
+                "port" : "Return",
                 "position" :
                 {
                   "line" : 4,
                   "path" : "Flow.java"
                 }
-              }
+              },
+              "kinds" :
+              [
+                {
+                  "callee_interval" :
+                  [
+                    5,
+                    6
+                  ],
+                  "kind" : "TestSource",
+                  "origins" :
+                  [
+                    {
+                      "method" : "LSource;.source:()LData;",
+                      "port" : "Return"
+                    }
+                  ],
+                  "preserves_type_context" : true
+                }
+              ]
             }
           ]
         }

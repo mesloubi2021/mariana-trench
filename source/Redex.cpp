@@ -22,7 +22,7 @@
 #include <Resolver.h>
 
 #include <mariana-trench/Assert.h>
-#include <mariana-trench/JsonValidation.h>
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/Options.h>
 #include <mariana-trench/Redex.h>
@@ -96,12 +96,29 @@ DexMethod* redex::get_method(std::string_view signature) {
   return method_reference->as_def();
 }
 
+DexMethod* redex::get_or_make_method(std::string_view signature) {
+  auto* dex_method = get_method(signature);
+  if (!dex_method) {
+    // `make_method` creates a `DexMethod*` but returns `DexMethodDef*`.
+    // `->as_def()` only works if the method is concrete/external, which isn't
+    // the case for newly created methods, hence the need to cast.
+    dex_method = static_cast<DexMethod*>(DexMethod::make_method(signature));
+    dex_method->set_external();
+  }
+
+  return dex_method;
+}
+
 DexFieldRef* redex::get_field(std::string_view field) {
   return DexField::get_field(field);
 }
 
 DexType* redex::get_type(std::string_view type) {
   return DexType::get_type(type);
+}
+
+DexType* redex::get_or_make_type(std::string_view type) {
+  return DexType::make_type(type);
 }
 
 void redex::process_proguard_configurations(
@@ -141,7 +158,7 @@ void redex::remove_unreachable(
     DexStoresVector& stores) {
   const std::vector<std::string>& proguard_configuration_paths =
       options.proguard_configuration_paths();
-  const std::optional<boost::filesystem::path>& removed_symbols_path =
+  const std::optional<std::filesystem::path>& removed_symbols_path =
       options.removed_symbols_output_path();
   keep_rules::ProguardConfiguration proguard_configuration;
 
@@ -149,9 +166,13 @@ void redex::remove_unreachable(
     return;
   }
 
+  auto scope = build_class_scope(stores);
+  auto method_override_graph = method_override_graph::build_graph(scope);
+
   reachability::ReachableAspects reachable_aspects;
   auto reachables = reachability::compute_reachable_objects(
-      stores,
+      scope,
+      *method_override_graph,
       /* empty ignore sets */ reachability::IgnoreSets(),
       /* number of ignore check strings */ nullptr,
       &reachable_aspects,
@@ -174,7 +195,7 @@ void redex::remove_unreachable(
     for (const auto& symbol : removed_symbols) {
       value.append(symbol);
     }
-    JsonValidation::write_json_file(*removed_symbols_path, value);
+    JsonWriter::write_json_file(*removed_symbols_path, value);
   }
 
   reachability::ObjectCounts after = reachability::count_objects(stores);

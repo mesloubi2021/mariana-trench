@@ -74,7 +74,8 @@ void FieldModel::check_taint_config_consistency(
     FieldModelConsistencyError::raise(fmt::format(
         "Model for field `{}` must have a kind {}.", show(field_), kind));
   }
-  if (!frame.callee_port().root().is_leaf() ||
+  if ((frame.callee_port() != nullptr &&
+       !frame.callee_port()->root().is_leaf()) ||
       frame.call_position() != nullptr || frame.distance() != 0 ||
       !frame.origins().is_bottom() || frame.via_type_of_ports().size() != 0 ||
       frame.canonical_names().size() != 0) {
@@ -88,7 +89,7 @@ void FieldModel::check_taint_config_consistency(
 void FieldModel::check_taint_consistency(
     const Taint& taint,
     std::string_view kind) const {
-  for (const auto& frame : taint.frames_iterator()) {
+  taint.visit_frames([kind, this](const CallInfo&, const Frame& frame) {
     // If a field_ exists, there should be exactly one origin at the
     // declaration frame..
     const auto* origin = frame.origins().elements().singleton();
@@ -98,7 +99,7 @@ void FieldModel::check_taint_consistency(
           show(field_),
           kind));
     }
-  }
+  });
 }
 
 void FieldModel::add_source(TaintConfig source) {
@@ -127,7 +128,7 @@ void FieldModel::join_with(const FieldModel& other) {
   mt_expensive_assert(previous.leq(*this) && other.leq(*this));
 }
 
-FieldModel FieldModel::from_json(
+FieldModel FieldModel::from_config_json(
     const Field* MT_NULLABLE field,
     const Json::Value& value,
     Context& context) {
@@ -157,21 +158,23 @@ Json::Value FieldModel::to_json(ExportOriginsMode export_origins_mode) const {
 
   if (!sources_.is_bottom()) {
     auto sources_value = Json::Value(Json::arrayValue);
-    for (const auto& source : sources_.frames_iterator()) {
+    sources_.visit_frames([&sources_value, export_origins_mode](
+                              const CallInfo& call_info, const Frame& source) {
       mt_assert(!source.is_bottom());
       // Field models do not have local positions/features
-      sources_value.append(source.to_json(export_origins_mode));
-    }
+      sources_value.append(source.to_json(call_info, export_origins_mode));
+    });
     value["sources"] = sources_value;
   }
 
   if (!sinks_.is_bottom()) {
     auto sinks_value = Json::Value(Json::arrayValue);
-    for (const auto& sink : sinks_.frames_iterator()) {
+    sinks_.visit_frames([&sinks_value, export_origins_mode](
+                            const CallInfo& call_info, const Frame& sink) {
       mt_assert(!sink.is_bottom());
       // Field models do not have local positions/features
-      sinks_value.append(sink.to_json(export_origins_mode));
-    }
+      sinks_value.append(sink.to_json(call_info, export_origins_mode));
+    });
     value["sinks"] = sinks_value;
   }
 
@@ -196,16 +199,19 @@ std::ostream& operator<<(std::ostream& out, const FieldModel& model) {
   out << "\nFieldModel(field=`" << show(model.field_) << "`";
   if (!model.sources_.is_bottom()) {
     out << ",\n  sources={\n";
-    for (const auto& source : model.sources_.frames_iterator()) {
-      out << "    " << source << ",\n";
-    }
+    model.sources_.visit_frames(
+        [&out](const CallInfo& call_info, const Frame& source) {
+          out << "    call_info=" << call_info << ", source=" << source
+              << ",\n";
+        });
     out << "  }";
   }
   if (!model.sinks_.is_bottom()) {
     out << ",\n  sinks={\n";
-    for (const auto& sink : model.sinks_.frames_iterator()) {
-      out << "    " << sink << ",\n";
-    }
+    model.sinks_.visit_frames(
+        [&out](const CallInfo& call_info, const Frame& sink) {
+          out << "    call_info=" << call_info << ", sink=" << sink << ",\n";
+        });
     out << "  }";
   }
   if (!model.model_generators_.is_bottom()) {
@@ -220,7 +226,7 @@ std::ostream& operator<<(std::ostream& out, const FieldModel& model) {
 
 void FieldModel::add_source(Taint source) {
   if (field_) {
-    source.set_origins(field_);
+    source.add_origins_if_declaration(field_);
   }
   check_taint_consistency(source, "source");
   sources_.join_with(source);
@@ -228,7 +234,7 @@ void FieldModel::add_source(Taint source) {
 
 void FieldModel::add_sink(Taint sink) {
   if (field_) {
-    sink.set_origins(field_);
+    sink.add_origins_if_declaration(field_);
   }
   check_taint_consistency(sink, "sink");
   sinks_.join_with(sink);

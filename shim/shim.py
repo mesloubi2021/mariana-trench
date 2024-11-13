@@ -15,7 +15,8 @@ import sys
 import tempfile
 import traceback
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
+from zipfile import BadZipFile
 
 from pyre_extensions import none_throws, safe_json
 
@@ -74,12 +75,25 @@ def _system_jar_configuration_path(input: str) -> str:
                 return ";".join(paths)
             except safe_json.InvalidJson:
                 raise argparse.ArgumentTypeError(
-                    f"`{path} must contain a list of strings"
+                    f"`{path}` must contain a list of strings"
                 )
 
     # Validation deferred to backend if we pass `;` separated list of paths
     # because they are allowed to not exist.
     return input
+
+
+def _heuristics_json_config_exists(input: str) -> str:
+    path = _path_exists(input)
+    with open(path) as file:
+        try:
+            # Heuristics are a list of key-value pairs.
+            safe_json.load(file, Dict[str, Any])
+            return path
+        except safe_json.InvalidJson:
+            raise argparse.ArgumentTypeError(
+                f"`{path}` must be a valid JSON file with key-value pairs"
+            )
 
 
 class ExtractJexException(ClientError):
@@ -113,7 +127,7 @@ def _extract_jex_file_if_exists(path: Path, target: str, build_directory: Path) 
             return jar_file_path
         else:
             raise ConfigurationError(
-                message=f"Could not find jar file `{path}` in `{jex_extract_directory}`.",
+                message=f"Could not find jar file `{jar_file_path}` in `{jex_extract_directory}`.",
             )
 
     # If the target is java_binary, then the output is a JEX file
@@ -144,7 +158,7 @@ def _build_target(target: str, *, mode: Optional[str] = None) -> Path:
     if is_fbcode_target:
         target = target[len(fbcode_target_prefix) :]
 
-    command = ["buck", "build", "--show-json-output"]
+    command = ["buck2", "build", "--show-json-output"]
     if mode:
         command.append(str(mode))
     command.append(target)
@@ -172,7 +186,9 @@ def _build_target(target: str, *, mode: Optional[str] = None) -> Path:
             exit_code=ExitCode.BUCK_ERROR,
         )
 
-    return working_directory / next(iter(list(response.values())))
+    # Use current_working_directory instead of working_directory.
+    # Path should be relative to fbsource/ rather than fbcode/
+    return current_working_directory / next(iter(list(response.values())))
 
 
 def _build_executable_target(target: str, *, mode: Optional[str] = None) -> Path:
@@ -212,21 +228,27 @@ def _desugar_jar_file(jar_path: Path) -> Path:
     LOG.info(f"Desugaring `{jar_path}`...")
     desugar_tool = _build_target(none_throws(configuration.DESUGAR_BUCK_TARGET))
     desugared_jar_file = jar_path.parent / (jar_path.stem + "-desugared.jar")
-    output = subprocess.run(
-        [
-            "java",
-            "-jar",
-            desugar_tool,
-            os.fspath(jar_path),
-            os.fspath(desugared_jar_file),
-        ],
-        stderr=subprocess.PIPE,
-    )
-    if output.returncode != 0:
-        raise ClientError(
-            message=f"Error while desugaring jar file, aborting.\nstderr: {output.stderr.decode()}",
-            exit_code=ExitCode.JAVA_TARGET_ERROR,
+
+    with tempfile.NamedTemporaryFile() as temp_file:
+        for skipped_class in configuration.get_skipped_classes():
+            temp_file.write(f"{skipped_class}\n".encode())
+        temp_file.flush()
+        output = subprocess.run(
+            [
+                "java",
+                "-jar",
+                desugar_tool,
+                os.fspath(jar_path),
+                os.fspath(desugared_jar_file),
+                os.fspath(temp_file.name),
+            ],
+            stderr=subprocess.PIPE,
         )
+        if output.returncode != 0:
+            raise ClientError(
+                message=f"Error while desugaring jar file, aborting.\nstderr: {output.stderr.decode()}",
+                exit_code=ExitCode.JAVA_TARGET_ERROR,
+            )
 
     LOG.info(f"Desugared jar file: `{desugared_jar_file}`.")
     return desugared_jar_file
@@ -238,15 +260,15 @@ def _build_apk_from_jar(jar_path: Path) -> Path:
     LOG.info(f"Running d8 on `{jar_path}`...")
     output = subprocess.run(
         [
-            "/opt/android/sdk_DEFAULT/build-tools/29.0.2/d8",
-            "-JXmx8G",
-            jar_path,
+            "buck2",
+            "run",
+            configuration.get_d8_target(),
+            "--",
             "--output",
             dex_file,
-            "--lib",
-            "/opt/android/sdk_DEFAULT/platforms/android-29/android.jar",
             "--min-api",
             "25",  # mininum api 25 corresponds to dex 37
+            jar_path,
         ],
         stderr=subprocess.PIPE,
     )
@@ -367,6 +389,11 @@ def _add_configuration_arguments(parser: argparse.ArgumentParser) -> None:
         help="Disables global type analysis. If a proguard configuration path is passed in, it will be ignored.",
     )
     configuration_arguments.add_argument(
+        "--verify-expected-output",
+        action="store_true",
+        help="Verifies special @Expected* annotations against the analysis output.",
+    )
+    configuration_arguments.add_argument(
         "--remove-unreachable-code",
         action="store_true",
         help="Prune unreachable code based on entry points specified in proguard configuration.",
@@ -382,6 +409,12 @@ def _add_configuration_arguments(parser: argparse.ArgumentParser) -> None:
         type=str,
         default=None,
         help="A json file containing graphql metadata mapping information.",
+    )
+    configuration_arguments.add_argument(
+        "--third-party-library-package-ids-path",
+        type=str,
+        default=None,
+        help="A json file containing list of third party library package ids.",
     )
     configuration_arguments.add_argument(
         "--shims-paths",
@@ -416,6 +449,11 @@ def _add_configuration_arguments(parser: argparse.ArgumentParser) -> None:
         help="A `;` separated list of literal models files and directories containing literal models files.",
     )
     configuration_arguments.add_argument(
+        "--sharded-models-directory",
+        type=_directory_exists,
+        help="Cached models from a separate analysis run, to be pre-loaded into the analysis.",
+    )
+    configuration_arguments.add_argument(
         "--maximum-source-sink-distance",
         type=int,
         default=configuration.DEFAULT_MAXIMUM_SOURCE_SINK_DISTANCE,
@@ -448,6 +486,15 @@ def _add_configuration_arguments(parser: argparse.ArgumentParser) -> None:
             "default, taint propagation is only tracked for return values and "
             "the `this` argument. This enables taint propagation across "
             "method invocations for all other object type arguments as well."
+        ),
+    )
+    configuration_arguments.add_argument(
+        "--heuristics",
+        type=_heuristics_json_config_exists,
+        help=(
+            "Path to JSON configuration file which specifies heuristics "
+            "parameters to use during the analysis. See the documentation for "
+            "available heuristics parameters."
         ),
     )
 
@@ -562,140 +609,174 @@ def _add_debug_arguments(parser: argparse.ArgumentParser) -> None:
         help="Dump a list of the method signatures in `methods.json`.",
     )
     debug_arguments.add_argument(
+        "--dump-coverage-info",
+        action="store_true",
+        help="Dumps file coverage info into `file_coverage.txt` and rule coverage info into `rule_coverage.json`.",
+    )
+    debug_arguments.add_argument(
         "--always-export-origins",
         action="store_true",
         help="Export the origins for every trace frame into the output JSON instead of only on origins.",
     )
 
 
-def _get_command_options(
-    arguments: argparse.Namespace, apk_directory: str, dex_directory: str
-) -> List[str]:
-    options = [
-        "--system-jar-paths",
-        arguments.system_jar_configuration_path,
-        "--apk-directory",
-        apk_directory,
-        "--dex-directory",
-        dex_directory,
-        "--rules-paths",
-        arguments.rules_paths,
-        "--repository-root-directory",
-        arguments.repository_root_directory,
-        "--source-root-directory",
-        arguments.source_root_directory,
-        "--apk-path",
-        arguments.apk_path,
-        "--output-directory",
-        arguments.output_directory,
-        "--maximum-source-sink-distance",
-        str(arguments.maximum_source_sink_distance),
-        "--model-generator-configuration-paths",
-        arguments.model_generator_configuration_paths,
-    ]
-
-    if arguments.grepo_metadata_path:
-        options.append("--grepo-metadata-path")
-        options.append(arguments.grepo_metadata_path)
-
-    if arguments.model_generator_search_paths:
-        options.append("--model-generator-search-paths")
-        options.append(arguments.model_generator_search_paths)
-
-    if arguments.models_paths:
-        options.append("--models-paths")
-        options.append(arguments.models_paths)
-
-    if arguments.field_models_paths:
-        options.append("--field-models-paths")
-        options.append(arguments.field_models_paths)
-
-    if arguments.literal_models_paths:
-        options.append("--literal-models-paths")
-        options.append(arguments.literal_models_paths)
-
-    if arguments.proguard_configuration_paths:
-        options.append("--proguard-configuration-paths")
-        options.append(arguments.proguard_configuration_paths)
-
-    if arguments.lifecycles_paths:
-        options.append("--lifecycles-paths")
-        options.append(arguments.lifecycles_paths)
-
-    if arguments.shims_paths:
-        options.append("--shims-paths")
-        options.append(arguments.shims_paths)
-
-    if arguments.graphql_metadata_paths:
-        options.append("--graphql-metadata-paths")
-        options.append(arguments.graphql_metadata_paths)
-
-    if arguments.source_exclude_directories:
-        options.append("--source-exclude-directories")
-        options.append(arguments.source_exclude_directories)
-
-    if arguments.generated_models_directory:
-        options.append("--generated-models-directory")
-        options.append(arguments.generated_models_directory)
-
-    if arguments.emit_all_via_cast_features:
-        options.append("--emit-all-via-cast-features")
-    if arguments.propagate_across_arguments:
-        options.append("--propagate-across-arguments")
-    if arguments.allow_via_cast_feature:
-        for feature in arguments.allow_via_cast_feature:
-            options.append("--allow-via-cast-feature=%s" % feature.strip())
-
-    if arguments.sequential:
-        options.append("--sequential")
-    if arguments.skip_source_indexing:
-        options.append("--skip-source-indexing")
-    if arguments.skip_analysis:
-        options.append("--skip-analysis")
-    if arguments.disable_parameter_type_overrides:
-        options.append("--disable-parameter-type-overrides")
-    if arguments.disable_global_type_analysis:
-        options.append("--disable-global-type-analysis")
-    if arguments.remove_unreachable_code:
-        options.append("--remove-unreachable-code")
-    if arguments.maximum_method_analysis_time is not None:
-        options.append("--maximum-method-analysis-time")
-        options.append(str(arguments.maximum_method_analysis_time))
-    if arguments.enable_cross_component_analysis:
-        options.append("--enable-cross-component-analysis")
-    if arguments.extra_analysis_arguments:
-        options.extend(shlex.split(arguments.extra_analysis_arguments))
-
-    if arguments.job_id:
-        options.append("--job-id")
-        options.append(arguments.job_id)
-    if arguments.metarun_id:
-        options.append("--metarun-id")
-        options.append(arguments.metarun_id)
-
+def _set_environment_variables(arguments: argparse.Namespace) -> None:
     trace_settings = [f"MARIANA_TRENCH:{arguments.verbosity}"]
     if "TRACE" in os.environ:
         trace_settings.insert(0, os.environ["TRACE"])
     os.environ["TRACE"] = ",".join(trace_settings)
 
+
+def _get_command_options_json(
+    arguments: argparse.Namespace, apk_directory: str, dex_directory: str
+) -> Dict[str, Any]:
+    options = {}
+    options["system-jar-paths"] = arguments.system_jar_configuration_path
+    options["apk-directory"] = apk_directory
+    options["dex-directory"] = dex_directory
+    options["rules-paths"] = arguments.rules_paths
+    options["repository-root-directory"] = arguments.repository_root_directory
+    options["source-root-directory"] = arguments.source_root_directory
+    options["apk-path"] = arguments.apk_path
+    options["output-directory"] = arguments.output_directory
+    options["maximum-source-sink-distance"] = arguments.maximum_source_sink_distance
+    options["model-generator-configuration-paths"] = (
+        arguments.model_generator_configuration_paths
+    )
+
+    if arguments.grepo_metadata_path:
+        options["grepo-metadata-path"] = arguments.grepo_metadata_path
+
+    if arguments.model_generator_search_paths:
+        options["model-generator-search-paths"] = arguments.model_generator_search_paths
+
+    if arguments.models_paths:
+        options["models-paths"] = arguments.models_paths
+
+    if arguments.field_models_paths:
+        options["field-models-paths"] = arguments.field_models_paths
+
+    if arguments.literal_models_paths:
+        options["literal-models-paths"] = arguments.literal_models_paths
+
+    if arguments.proguard_configuration_paths:
+        options["proguard-configuration-paths"] = arguments.proguard_configuration_paths
+
+    if arguments.lifecycles_paths:
+        options["lifecycles-paths"] = arguments.lifecycles_paths
+
+    if arguments.shims_paths:
+        options["shims-paths"] = arguments.shims_paths
+
+    if arguments.graphql_metadata_paths:
+        options["graphql-metadata-paths"] = arguments.graphql_metadata_paths
+
+    if arguments.third_party_library_package_ids_path:
+        options["third-party-library-package-ids-path"] = (
+            arguments.third_party_library_package_ids_path
+        )
+
+    if arguments.source_exclude_directories:
+        options["source-exclude-directories"] = arguments.source_exclude_directories
+
+    if arguments.generated_models_directory:
+        options["generated-models-directory"] = arguments.generated_models_directory
+
+    if arguments.sharded_models_directory:
+        options["sharded-models-directory"] = arguments.sharded_models_directory
+
+    if arguments.emit_all_via_cast_features:
+        options["emit-all-via-cast-features"] = True
+
+    if arguments.propagate_across_arguments:
+        options["propagate-across-arguments"] = True
+
+    if arguments.allow_via_cast_feature:
+        options["allow-via-cast-feature"] = []
+        for feature in arguments.allow_via_cast_feature:
+            options["allow-via-cast-feature"].append(feature.strip())
+
+    if arguments.heuristics:
+        options["heuristics"] = arguments.heuristics
+
+    if arguments.sequential:
+        options["sequential"] = True
+
+    if arguments.skip_source_indexing:
+        options["skip-source-indexing"] = True
+
+    if arguments.skip_analysis:
+        options["skip-analysis"] = True
+
+    if arguments.disable_parameter_type_overrides:
+        options["disable-parameter-type-overrides"] = True
+
+    if arguments.disable_global_type_analysis:
+        options["disable-global-type-analysis"] = True
+
+    if arguments.verify_expected_output:
+        options["verify-expected-output"] = True
+
+    if arguments.remove_unreachable_code:
+        options["remove-unreachable-code"] = True
+
+    if arguments.maximum_method_analysis_time is not None:
+        options["maximum-method-analysis-time"] = arguments.maximum_method_analysis_time
+
+    if arguments.enable_cross_component_analysis:
+        options["enable-cross-component-analysis"] = True
+
+    if arguments.extra_analysis_arguments:
+        extra_arguments = json.loads(arguments.extra_analysis_arguments)
+        for key, value in extra_arguments.items():
+            if (
+                key in options
+                and isinstance(options[key], list)
+                and isinstance(value, list)
+            ):
+                # Append the values to the existing list
+                options[key].extend(value)
+            else:
+                # Override the value
+                options[key] = value
+
+    if arguments.job_id:
+        options["job-id"] = arguments.job_id
+
+    if arguments.metarun_id:
+        options["metarun-id"] = arguments.metarun_id
+
     if arguments.log_method:
+        options["log-method"] = []
         for method in arguments.log_method:
-            options.append("--log-method=%s" % method.strip())
+            options["log-method"].append(method.strip())
+
     if arguments.log_method_types:
+        options["log-method-types"] = []
         for method in arguments.log_method_types:
-            options.append("--log-method-types=%s" % method.strip())
+            options["log-method-types"].append(method.strip())
+
     if arguments.dump_class_hierarchies:
-        options.append("--dump-class-hierarchies")
+        options["dump-class-hierarchies"] = True
+
     if arguments.dump_overrides:
-        options.append("--dump-overrides")
+        options["dump-overrides"] = True
+
     if arguments.dump_call_graph:
-        options.append("--dump-call-graph")
+        options["dump-call-graph"] = True
+
     if arguments.dump_dependencies:
-        options.append("--dump-dependencies")
+        options["dump-dependencies"] = True
+
     if arguments.dump_methods:
-        options.append("--dump-methods")
+        options["dump-methods"] = True
+
+    if arguments.dump_coverage_info:
+        options["dump-coverage-info"] = True
+
     if arguments.always_export_origins:
-        options.append("--always-export-origins")
+        options["always-export-origins"] = True
+
     return options
 
 
@@ -745,6 +826,14 @@ def main() -> None:
                     for path in configuration.get_default_generator_search_paths()
                 )
             )
+        if arguments.lifecycles_paths is None:
+            arguments.lifecycles_paths = _separated_paths_exist(
+                os.fspath(configuration.get_path("lifecycles.json"))
+            )
+        if arguments.shims_paths is None:
+            arguments.shims_paths = _separated_paths_exist(
+                os.fspath(configuration.get_path("shims.json"))
+            )
         if (
             configuration.FACEBOOK_SHIM
             and arguments.java_target is not None
@@ -768,11 +857,14 @@ def main() -> None:
 
         # Build the vanilla java project.
         if configuration.FACEBOOK_SHIM and arguments.java_target:
-            jar_file = _extract_jex_file_if_exists(
-                _build_target(arguments.java_target, mode=arguments.java_mode),
-                arguments.java_target,
-                build_directory,
-            )
+            if os.path.isfile(arguments.java_target):
+                jar_file = Path(arguments.java_target)
+            else:
+                jar_file = _extract_jex_file_if_exists(
+                    _build_target(arguments.java_target, mode=arguments.java_mode),
+                    arguments.java_target,
+                    build_directory,
+                )
             desugared_jar_file = _desugar_jar_file(jar_file)
             arguments.apk_path = os.fspath(_build_apk_from_jar(desugared_jar_file))
 
@@ -792,23 +884,36 @@ def main() -> None:
                 binary, arguments, apk_directory, dex_directory
             )
         else:
-            options = _get_command_options(arguments, apk_directory, dex_directory)
-            command = [os.fspath(binary.resolve())] + options
-            if arguments.gdb:
-                command = ["gdb", "--args"] + command
-            elif arguments.lldb:
-                command = ["lldb", "--"] + command
-            LOG.info(f"Running Mariana Trench: {' '.join(command)}")
-            output = subprocess.run(command)
+            with tempfile.NamedTemporaryFile(suffix=".json", mode="w") as options_file:
+                _set_environment_variables(arguments)
+                options_json = _get_command_options_json(
+                    arguments, apk_directory, dex_directory
+                )
+                json.dump(options_json, options_file, indent=4)
+                options_file.flush()
+                command = [os.fspath(binary.resolve()), "--config", options_file.name]
+                if arguments.gdb:
+                    command = ["gdb", "--args"] + command
+                elif arguments.lldb:
+                    command = ["lldb", "--"] + command
+                LOG.info(f"Running Mariana Trench: {' '.join(command)}")
+                output = subprocess.run(command)
         if output.returncode != 0:
             LOG.fatal(f"Analysis binary exited with exit code {output.returncode}.")
             sys.exit(output.returncode)
     except (ClientError, ConfigurationError) as error:
         LOG.fatal(f"{type(error).__name__}: {error.args[0]}")
-        LOG.fatal(error.exit_code)
+        LOG.fatal(f"Exiting with error code: {error.exit_code}")
         sys.exit(error.exit_code)
+    except BadZipFile as error:
+        LOG.fatal(
+            f"APKError: Failed to extract APK due to {type(error).__name__}: {error.args[0]}"
+        )
+        LOG.fatal(f"Exiting with error code: {ExitCode.APK_ERROR}")
+        sys.exit(ExitCode.APK_ERROR)
     except Exception:
         LOG.fatal(f"Unexpected error:\n{traceback.format_exc()}")
+        LOG.fatal(f"Exiting with error code: {ExitCode.ERROR}")
         sys.exit(ExitCode.ERROR)
     finally:
         try:

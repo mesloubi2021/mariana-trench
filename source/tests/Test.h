@@ -15,6 +15,7 @@
 
 #include <DexStore.h>
 
+#include <mariana-trench/AccessPathFactory.h>
 #include <mariana-trench/ArtificialMethods.h>
 #include <mariana-trench/CallGraph.h>
 #include <mariana-trench/ClassHierarchies.h>
@@ -33,6 +34,7 @@
 #include <mariana-trench/Rules.h>
 #include <mariana-trench/Scheduler.h>
 #include <mariana-trench/Statistics.h>
+#include <mariana-trench/TaggedRootSet.h>
 #include <mariana-trench/TaintConfig.h>
 #include <mariana-trench/Types.h>
 #include <mariana-trench/UsedKinds.h>
@@ -64,7 +66,7 @@ Context make_context(const DexStore& store);
 std::unique_ptr<Options> make_default_options();
 
 struct FrameProperties {
-  AccessPath callee_port = AccessPath(Root(Root::Kind::Leaf));
+  const AccessPath* MT_NULLABLE callee_port = nullptr;
   const Method* MT_NULLABLE callee = nullptr;
   const Position* MT_NULLABLE call_position = nullptr;
   CallClassIntervalContext class_interval_context = CallClassIntervalContext();
@@ -73,8 +75,8 @@ struct FrameProperties {
   FeatureMayAlwaysSet inferred_features = {};
   FeatureMayAlwaysSet locally_inferred_features = {};
   FeatureSet user_features = {};
-  RootSetAbstractDomain via_type_of_ports = {};
-  RootSetAbstractDomain via_value_of_ports = {};
+  TaggedRootSet via_type_of_ports = {};
+  TaggedRootSet via_value_of_ports = {};
   CanonicalNameSetAbstractDomain canonical_names = {};
   PathTreeDomain output_paths = {};
   LocalPositionSet local_positions = {};
@@ -88,16 +90,13 @@ TaintConfig make_taint_config(
     const Kind* kind,
     const FrameProperties& properties);
 TaintConfig make_leaf_taint_config(const Kind* kind);
+TaintConfig make_leaf_taint_config(const Kind* kind, OriginSet origins);
 TaintConfig make_leaf_taint_config(
     const Kind* kind,
     FeatureMayAlwaysSet inferred_features,
     FeatureMayAlwaysSet locally_inferred_features,
     FeatureSet user_features,
     OriginSet origins);
-TaintConfig make_crtex_leaf_taint_config(
-    const Kind* kind,
-    AccessPath callee_port,
-    CanonicalNameSetAbstractDomain canonical_names);
 TaintConfig make_propagation_taint_config(const PropagationKind* kind);
 TaintConfig make_propagation_taint_config(
     const PropagationKind* kind,
@@ -106,16 +105,21 @@ TaintConfig make_propagation_taint_config(
     FeatureMayAlwaysSet locally_inferred_features,
     FeatureSet user_features);
 
-boost::filesystem::path find_repository_root();
+PropagationConfig make_propagation_config(
+    const Kind* kind,
+    const AccessPath& input_path,
+    const AccessPath& output_path);
+
+std::filesystem::path find_repository_root();
 
 Json::Value parse_json(std::string input);
 Json::Value sorted_json(const Json::Value& value);
 
-boost::filesystem::path find_dex_path(
-    const boost::filesystem::path& test_directory);
+std::filesystem::path find_dex_path(
+    const std::filesystem::path& test_directory);
 
 std::vector<std::string> sub_directories(
-    const boost::filesystem::path& directory);
+    const std::filesystem::path& directory);
 
 /**
  * Normalizes input in json-lines form where the json-lines themselves can
@@ -131,7 +135,7 @@ std::string normalize_json_lines(const std::string& input);
       PARAM_GENERATOR,                                                      \
       ([](const ::testing::TestParamInfo<TEST_SUITE_NAME::ParamType>& info) \
            -> std::string {                                                 \
-        boost::filesystem::path name = info.param;                          \
+        std::filesystem::path name = info.param;                            \
         std::string test_name = name.stem().string();                       \
         return test_name;                                                   \
       }));

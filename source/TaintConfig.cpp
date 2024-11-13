@@ -5,21 +5,22 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <mariana-trench/AccessPathFactory.h>
 #include <mariana-trench/Context.h>
 #include <mariana-trench/ExtraTraceSet.h>
 #include <mariana-trench/JsonValidation.h>
-#include <mariana-trench/OriginFactory.h>
 #include <mariana-trench/TaintConfig.h>
 
 namespace marianatrench {
 
 namespace {
 
-AccessPath validate_and_infer_crtex_callee_port(
+const AccessPath* validate_and_infer_crtex_callee_port(
     const Json::Value& value,
-    const AccessPath& callee_port,
+    const AccessPath* MT_NULLABLE callee_port,
     const CanonicalNameSetAbstractDomain& canonical_names,
-    const RootSetAbstractDomain& via_type_of_ports) {
+    const TaggedRootSet& via_type_of_ports,
+    Context& context) {
   mt_assert(canonical_names.is_value() && !canonical_names.elements().empty());
 
   // Anchor ports only go with templated canonical names. Producer ports only
@@ -54,25 +55,27 @@ AccessPath validate_and_infer_crtex_callee_port(
     }
   }
 
-  // If callee_port is user-specified and not Leaf, validate it.
-  if (callee_port.root().is_anchor() && is_instantiated) {
-    throw JsonValidationError(
-        value,
-        /* field */ std::nullopt,
-        "`Anchor` callee ports to go with templated canonical names.");
-  } else if (callee_port.root().is_producer() && is_templated) {
-    throw JsonValidationError(
-        value,
-        /* field */ std::nullopt,
-        "`Producer` callee ports to go with instantiated canonical names.");
-  } else if (!callee_port.root().is_leaf_port()) {
-    throw JsonValidationError(
-        value,
-        /* field */ std::nullopt,
-        "`Anchor` or `Producer` callee port for crtex frame with canonical_names defined.");
+  // If callee_port is user-specified (not null), validate it.
+  if (callee_port != nullptr) {
+    if (callee_port->root().is_anchor() && is_instantiated) {
+      throw JsonValidationError(
+          value,
+          /* field */ std::nullopt,
+          "`Anchor` callee ports to go with templated canonical names.");
+    } else if (callee_port->root().is_producer() && is_templated) {
+      throw JsonValidationError(
+          value,
+          /* field */ std::nullopt,
+          "`Producer` callee ports to go with instantiated canonical names.");
+    } else if (!callee_port->root().is_leaf_port()) {
+      throw JsonValidationError(
+          value,
+          /* field */ std::nullopt,
+          "`Anchor` or `Producer` callee port for crtex frame with canonical_names defined.");
+    }
   }
 
-  if (callee_port.root().is_leaf()) {
+  if (callee_port == nullptr || callee_port->root().is_leaf()) {
     if (is_instantiated) {
       throw JsonValidationError(
           value,
@@ -82,9 +85,12 @@ AccessPath validate_and_infer_crtex_callee_port(
 
     // If the callee_port is defaulted to Leaf, it should be updated to an
     // Anchor to enable detection that this comes from a CRTEX producer.
-    return AccessPath(Root(Root::Kind::Anchor));
+    return context.access_path_factory->get(
+        AccessPath(Root(Root::Kind::Anchor)));
   }
 
+  // For CRTEX, the callee port is never nullptr.
+  mt_assert(callee_port != nullptr);
   return callee_port;
 }
 
@@ -94,9 +100,9 @@ TaintConfig TaintConfig::from_json(const Json::Value& value, Context& context) {
   JsonValidation::validate_object(value);
   JsonValidation::check_unexpected_members(
       value,
-      {"port", // Only when called from `Model::from_json`
-       "caller_port", // Only when called from `Model::from_json`
-       "type", // Only when called from `Model::from_json` for effects
+      {"port", // Only when called from `Model::from_config_json`
+       "caller_port", // Only when called from `Model::from_config_json`
+       "type", // Only when called from `Model::from_config_json` for effects
        "kind",
        "partial_label",
        "callee_port",
@@ -104,28 +110,31 @@ TaintConfig TaintConfig::from_json(const Json::Value& value, Context& context) {
        "call_position",
        "distance",
        "features",
-       "may_features",
-       "always_features",
+       "via_annotation", // Only when called from
+                         // `TaintConfigTemplate::from_json`
        "via_type_of",
        "via_value_of",
        "canonical_names"});
 
-  const Kind* kind =
-      Kind::from_json(value, context, /* check_unexpected_members */ false);
+  const Kind* kind = Kind::from_config_json(
+      value, context, /* check_unexpected_members */ false);
 
-  auto callee_port = AccessPath(Root(Root::Kind::Leaf));
+  const AccessPath* MT_NULLABLE callee_port = nullptr;
   if (value.isMember("callee_port")) {
-    JsonValidation::string(value, /* field */ "callee_port");
-    callee_port = AccessPath::from_json(value["callee_port"]);
+    auto port = JsonValidation::string(value, /* field */ "callee_port");
+    if (port != "Leaf") {
+      callee_port =
+          context.access_path_factory->get(AccessPath::from_json(port));
+    }
   }
 
-  const Method* callee = nullptr;
+  const Method* MT_NULLABLE callee = nullptr;
   if (value.isMember("callee")) {
     callee = Method::from_json(
         JsonValidation::object_or_string(value, /* field */ "callee"), context);
   }
 
-  const Position* call_position = nullptr;
+  const Position* MT_NULLABLE call_position = nullptr;
   if (value.isMember("call_position")) {
     call_position = Position::from_json(
         JsonValidation::object(value, /* field */ "call_position"), context);
@@ -136,13 +145,6 @@ TaintConfig TaintConfig::from_json(const Json::Value& value, Context& context) {
     distance = JsonValidation::integer(value, /* field */ "distance");
   }
 
-  // Inferred may_features and always_features. Technically, user-specified
-  // features should go under "user_features", but this gives a way to override
-  // that behavior and specify "may/always" features. Note that local inferred
-  // features cannot be user-specified.
-  auto inferred_features = FeatureMayAlwaysSet::from_json(
-      value, context, /* check_unexpected_members */ false);
-
   // User specified always-features.
   FeatureSet user_features;
   if (value.isMember("features")) {
@@ -150,19 +152,19 @@ TaintConfig TaintConfig::from_json(const Json::Value& value, Context& context) {
     user_features = FeatureSet::from_json(value["features"], context);
   }
 
-  RootSetAbstractDomain via_type_of_ports;
+  TaggedRootSet via_type_of_ports;
   if (value.isMember("via_type_of")) {
-    for (const auto& root :
+    for (const auto& tagged_root :
          JsonValidation::null_or_array(value, /* field */ "via_type_of")) {
-      via_type_of_ports.add(Root::from_json(root));
+      via_type_of_ports.add(TaggedRoot::from_json(tagged_root));
     }
   }
 
-  RootSetAbstractDomain via_value_of_ports;
+  TaggedRootSet via_value_of_ports;
   if (value.isMember("via_value_of")) {
-    for (const auto& root :
+    for (const auto& tagged_root :
          JsonValidation::null_or_array(value, /* field */ "via_value_of")) {
-      via_value_of_ports.add(Root::from_json(root));
+      via_value_of_ports.add(TaggedRoot::from_json(tagged_root));
     }
   }
 
@@ -175,14 +177,24 @@ TaintConfig TaintConfig::from_json(const Json::Value& value, Context& context) {
   }
 
   CallKind call_kind = CallKind::declaration();
+  OriginSet origins;
   if (canonical_names.is_value() && !canonical_names.elements().empty()) {
     callee_port = validate_and_infer_crtex_callee_port(
-        value, callee_port, canonical_names, via_type_of_ports);
-    // CRTEX frames are special - we treat them as origins instead of
-    // declaration as we want the leaf to be preserved in the trace.
-    call_kind = CallKind::origin();
+        value, callee_port, canonical_names, via_type_of_ports, context);
+    // CRTEX consumer frames (unintuitively identified by "producer" in the
+    // port) are treated as origins instead of declaration so that the trace
+    // to the producer issue is retained. Declaration frames would be ignored
+    // by the JSON parser. The instantiated canonical name(s) and port should
+    // be reported in the origins as they indicate the next hop of the trace.
+    // This acts like we are propagating the call kind and canonical names.
+    if (callee_port->root().is_producer()) {
+      call_kind = call_kind.propagate();
+      origins.join_with(
+          CanonicalName::propagate(canonical_names, *callee_port));
+    }
   } else if (
-      callee_port.root().is_anchor() || callee_port.root().is_producer()) {
+      callee_port != nullptr &&
+      (callee_port->root().is_anchor() || callee_port->root().is_producer())) {
     throw JsonValidationError(
         value,
         /* field */ std::nullopt,
@@ -191,7 +203,7 @@ TaintConfig TaintConfig::from_json(const Json::Value& value, Context& context) {
 
   // Sanity checks.
   if (callee == nullptr) {
-    if (!callee_port.root().is_leaf_port()) {
+    if (callee_port != nullptr && !callee_port->root().is_leaf_port()) {
       throw JsonValidationError(
           value,
           /* field */ "callee_port",
@@ -208,7 +220,7 @@ TaintConfig TaintConfig::from_json(const Json::Value& value, Context& context) {
           /* expected */ "a value of 0");
     }
   } else {
-    if (callee_port.root().is_leaf_port()) {
+    if (callee_port == nullptr || callee_port->root().is_leaf_port()) {
       throw JsonValidationError(
           value,
           /* field */ "callee_port",
@@ -237,8 +249,8 @@ TaintConfig TaintConfig::from_json(const Json::Value& value, Context& context) {
       distance,
       // Origins are not configurable. They are auto-populated when the config
       // is applied as a model for a specific method/field.
-      /* origins */ {},
-      std::move(inferred_features),
+      std::move(origins),
+      /* inferred_features */ FeatureMayAlwaysSet::bottom(),
       std::move(user_features),
       std::move(via_type_of_ports),
       std::move(via_value_of_ports),
@@ -247,6 +259,10 @@ TaintConfig TaintConfig::from_json(const Json::Value& value, Context& context) {
       /* local_positions */ {},
       /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
       /* extra_traces */ {});
+}
+
+void TaintConfig::add_user_feature_set(const FeatureSet& feature_set) {
+  user_features_.join_with(feature_set);
 }
 
 } // namespace marianatrench

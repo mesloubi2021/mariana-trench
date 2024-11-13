@@ -87,10 +87,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "TestGeneration",
               "origins" : 
               [
@@ -109,10 +112,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "TestGeneration",
               "origins" : 
               [
@@ -131,10 +137,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "TestOtherGeneration",
               "origins" : 
               [
@@ -145,7 +154,9 @@
               ],
               "via_type_of" : 
               [
-                "Return"
+                {
+                  "port" : "Return"
+                }
               ]
             }
           ]
@@ -170,10 +181,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "TestOtherParameterSource",
               "origins" : 
               [
@@ -184,7 +198,6 @@
               ]
             },
             {
-              "call_info" : "Declaration",
               "kind" : "TestParameterSource",
               "origins" : 
               [
@@ -203,10 +216,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "TestOtherParameterSource",
               "origins" : 
               [
@@ -217,7 +233,6 @@
               ]
             },
             {
-              "call_info" : "Declaration",
               "kind" : "TestParameterSource",
               "origins" : 
               [
@@ -244,10 +259,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(1)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(1)",
               "output_paths" : 
               {
@@ -263,10 +282,14 @@
       "output" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Propagation",
+            "port" : "Argument(1)"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Propagation",
               "kind" : "LocalArgument(1)",
               "output_paths" : 
               {
@@ -278,6 +301,75 @@
       ]
     }
   ],
+  "sanitizers" : 
+  [
+    {
+      "kinds" : 
+      [
+        {
+          "kind" : "TestParameterSource"
+        }
+      ],
+      "port" : "Argument(1)",
+      "sanitize" : "sources"
+    },
+    {
+      "kinds" : 
+      [
+        {
+          "kind" : "TestParameterSource"
+        }
+      ],
+      "port" : "Argument(2)",
+      "sanitize" : "sources"
+    },
+    {
+      "kinds" : 
+      [
+        {
+          "kind" : "TestSink"
+        }
+      ],
+      "port" : "Argument(1)",
+      "sanitize" : "sinks"
+    },
+    {
+      "kinds" : 
+      [
+        {
+          "kind" : "TestSink"
+        }
+      ],
+      "port" : "Argument(2)",
+      "sanitize" : "sinks"
+    },
+    {
+      "kinds" : 
+      [
+        {
+          "kind" : "Source[TestParameterSource]"
+        },
+        {
+          "kind" : "Source[TestSink]"
+        }
+      ],
+      "port" : "Argument(1)",
+      "sanitize" : "propagations"
+    },
+    {
+      "kinds" : 
+      [
+        {
+          "kind" : "Source[TestParameterSource]"
+        },
+        {
+          "kind" : "Source[TestSink]"
+        }
+      ],
+      "port" : "Argument(2)",
+      "sanitize" : "propagations"
+    }
+  ],
   "sinks" : 
   [
     {
@@ -285,10 +377,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "TestSink",
               "origins" : 
               [
@@ -299,7 +394,9 @@
               ],
               "via_type_of" : 
               [
-                "Argument(0)"
+                {
+                  "port" : "Argument(0)"
+                }
               ]
             }
           ]
@@ -311,10 +408,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "TestSink",
               "origins" : 
               [
@@ -325,7 +425,9 @@
               ],
               "via_type_of" : 
               [
-                "Argument(0)"
+                {
+                  "port" : "Argument(0)"
+                }
               ]
             }
           ]
@@ -347,10 +449,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "SensitiveData",
               "origins" : 
               [
@@ -369,10 +474,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "SensitiveData",
               "origins" : 
               [
@@ -391,10 +499,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "SensitiveData",
               "origins" : 
               [
@@ -428,10 +539,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "SensitiveData",
               "origins" : 
               [
@@ -450,10 +564,13 @@
       "taint" : 
       [
         {
+          "call_info" : 
+          {
+            "call_kind" : "Declaration"
+          },
           "kinds" : 
           [
             {
-              "call_info" : "Declaration",
               "kind" : "SensitiveData",
               "origins" : 
               [

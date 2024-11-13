@@ -13,14 +13,23 @@
           "taint" :
           [
             {
+              "call_info" :
+              {
+                "call_kind" : "Origin",
+                "port" : "Return",
+                "position" :
+                {
+                  "line" : 1,
+                  "path" : "Flow.java"
+                }
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Origin",
                   "callee_interval" :
                   [
-                    6,
-                    7
+                    5,
+                    6
                   ],
                   "kind" : "TestSource",
                   "origins" :
@@ -38,23 +47,7 @@
                 {
                   "line" : 2
                 }
-              ],
-              "origin" :
-              {
-                "leaves" :
-                [
-                  {
-                    "method" : "LSource;.source:()LData;",
-                    "port" : "Return"
-                  }
-                ],
-                "method" : "LSource;.source:()LData;",
-                "position" :
-                {
-                  "line" : 1,
-                  "path" : "Flow.java"
-                }
-              }
+              ]
             }
           ]
         }
@@ -77,14 +70,23 @@
           "sinks" :
           [
             {
+              "call_info" :
+              {
+                "call_kind" : "Origin",
+                "port" : "Argument(1)",
+                "position" :
+                {
+                  "line" : 3,
+                  "path" : "Flow.java"
+                }
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Origin",
                   "callee_interval" :
                   [
-                    6,
-                    7
+                    5,
+                    6
                   ],
                   "kind" : "TestSink",
                   "origins" :
@@ -96,36 +98,29 @@
                   ],
                   "preserves_type_context" : true
                 }
-              ],
-              "origin" :
-              {
-                "leaves" :
-                [
-                  {
-                    "method" : "LSink;.sink:(LData;)V",
-                    "port" : "Argument(1)"
-                  }
-                ],
-                "method" : "LSink;.sink:(LData;)V",
-                "position" :
-                {
-                  "line" : 3,
-                  "path" : "Flow.java"
-                }
-              }
+              ]
             }
           ],
           "sources" :
           [
             {
+              "call_info" :
+              {
+                "call_kind" : "Origin",
+                "port" : "Return",
+                "position" :
+                {
+                  "line" : 1,
+                  "path" : "Flow.java"
+                }
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Origin",
                   "callee_interval" :
                   [
-                    6,
-                    7
+                    5,
+                    6
                   ],
                   "kind" : "TestSource",
                   "origins" :
@@ -150,23 +145,7 @@
                 {
                   "line" : 2
                 }
-              ],
-              "origin" :
-              {
-                "leaves" :
-                [
-                  {
-                    "method" : "LSource;.source:()LData;",
-                    "port" : "Return"
-                  }
-                ],
-                "method" : "LSource;.source:()LData;",
-                "position" :
-                {
-                  "line" : 1,
-                  "path" : "Flow.java"
-                }
-              }
+              ]
             }
           ]
         }
@@ -184,14 +163,23 @@
           "taint" :
           [
             {
+              "call_info" :
+              {
+                "call_kind" : "Origin",
+                "port" : "Argument(1)",
+                "position" :
+                {
+                  "line" : 3,
+                  "path" : "Flow.java"
+                }
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Origin",
                   "callee_interval" :
                   [
-                    6,
-                    7
+                    5,
+                    6
                   ],
                   "kind" : "TestSink",
                   "origins" :
@@ -209,23 +197,7 @@
                 {
                   "line" : 2
                 }
-              ],
-              "origin" :
-              {
-                "leaves" :
-                [
-                  {
-                    "method" : "LSink;.sink:(LData;)V",
-                    "port" : "Argument(1)"
-                  }
-                ],
-                "method" : "LSink;.sink:(LData;)V",
-                "position" :
-                {
-                  "line" : 3,
-                  "path" : "Flow.java"
-                }
-              }
+              ]
             }
           ]
         }
@@ -245,10 +217,14 @@
           "output" :
           [
             {
+              "call_info" :
+              {
+                "call_kind" : "Propagation",
+                "port" : "Return"
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Propagation",
                   "kind" : "LocalReturn",
                   "output_paths" :
                   {
@@ -264,10 +240,14 @@
           "output" :
           [
             {
+              "call_info" :
+              {
+                "call_kind" : "Propagation",
+                "port" : "Argument(0)"
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Propagation",
                   "kind" : "LocalArgument(0)",
                   "output_paths" :
                   {
@@ -277,10 +257,14 @@
               ]
             },
             {
+              "call_info" :
+              {
+                "call_kind" : "Propagation",
+                "port" : "Return"
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Propagation",
                   "kind" : "LocalReturn",
                   "output_paths" :
                   {

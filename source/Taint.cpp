@@ -5,8 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <algorithm>
+#include <iterator>
 #include <unordered_set>
 
+#include <mariana-trench/AccessPathFactory.h>
 #include <mariana-trench/Constants.h>
 #include <mariana-trench/JsonValidation.h>
 #include <mariana-trench/Taint.h>
@@ -19,14 +22,9 @@ Taint::Taint(std::initializer_list<TaintConfig> configs) {
   }
 }
 
-TaintFramesIterator Taint::frames_iterator() const {
-  return TaintFramesIterator(*this);
-}
-
 std::size_t Taint::num_frames() const {
   std::size_t count = 0;
-  auto iterator = frames_iterator();
-  std::for_each(iterator.begin(), iterator.end(), [&count](auto) { ++count; });
+  this->visit_frames([&count](const CallInfo&, const Frame&) { ++count; });
   return count;
 }
 
@@ -48,20 +46,30 @@ void Taint::difference_with(const Taint& other) {
       });
 }
 
-void Taint::set_origins(const Method* method, const AccessPath* port) {
+void Taint::add_origins_if_declaration(
+    const Method* method,
+    const AccessPath* port) {
   map_.transform([method, port](LocalTaint* local_taint) {
     if (local_taint->callee() == nullptr &&
         !local_taint->call_kind().is_propagation_without_trace()) {
-      local_taint->set_origins(method, port);
+      local_taint->add_origins_if_declaration(method, port);
     }
   });
 }
 
-void Taint::set_origins(const Field* field) {
+void Taint::add_origins_if_declaration(const Field* field) {
   map_.transform([field](LocalTaint* local_taint) -> void {
     // Setting a field callee must always be done on non-propagated leaves.
     mt_assert(local_taint->callee() == nullptr);
-    local_taint->set_origins(field);
+    local_taint->add_origins_if_declaration(field);
+  });
+}
+
+void Taint::add_origins_if_declaration(std::string_view literal) {
+  map_.transform([literal](LocalTaint* local_taint) -> void {
+    // Setting a field callee must always be done on non-propagated leaves.
+    mt_assert(local_taint->callee() == nullptr);
+    local_taint->add_origins_if_declaration(literal);
   });
 }
 
@@ -114,16 +122,17 @@ void Taint::add_locally_inferred_features_and_local_position(
 }
 
 Taint Taint::propagate(
-    const Method* callee,
-    const AccessPath& callee_port,
+    const Method* MT_NULLABLE callee,
+    const AccessPath* MT_NULLABLE callee_port,
     const Position* call_position,
     int maximum_source_sink_distance,
-    const FeatureMayAlwaysSet& extra_features,
     Context& context,
     const std::vector<const DexType * MT_NULLABLE>& source_register_types,
     const std::vector<std::optional<std::string>>& source_constant_arguments,
     const CallClassIntervalContext& class_interval_context,
-    const ClassIntervals::Interval& caller_class_interval) const {
+    const ClassIntervals::Interval& caller_class_interval,
+    const RootPatriciaTreeAbstractPartition<FeatureSet>&
+        add_features_to_arguments) const {
   Taint result;
   for (const auto& [_, local_taint] : map_.bindings()) {
     if (local_taint.call_kind().is_propagation_without_trace()) {
@@ -141,12 +150,12 @@ Taint Taint::propagate(
         source_register_types,
         source_constant_arguments,
         class_interval_context,
-        caller_class_interval);
+        caller_class_interval,
+        add_features_to_arguments);
     if (propagated.is_bottom()) {
       continue;
     }
 
-    propagated.add_locally_inferred_features(extra_features);
     result.add(propagated);
   }
   return result;
@@ -164,12 +173,36 @@ Taint Taint::apply_transform(
     const KindFactory& kind_factory,
     const TransformsFactory& transforms_factory,
     const UsedKinds& used_kinds,
-    const TransformList* local_transforms) const {
+    const TransformList* local_transforms,
+    transforms::TransformDirection direction) const {
   Taint result{};
 
   for (const auto& [_, local_taint] : map_.bindings()) {
     auto new_callee_frames = local_taint.apply_transform(
-        kind_factory, transforms_factory, used_kinds, local_transforms);
+        kind_factory,
+        transforms_factory,
+        used_kinds,
+        local_transforms,
+        direction);
+    if (new_callee_frames.is_bottom()) {
+      continue;
+    }
+
+    result.add(new_callee_frames);
+  }
+
+  return result;
+}
+
+Taint Taint::add_sanitize_transform(
+    const Sanitizer& sanitizer,
+    const KindFactory& kind_factory,
+    const TransformsFactory& transforms_factory) const {
+  Taint result{};
+
+  for (const auto& [_, local_taint] : map_.bindings()) {
+    auto new_callee_frames = local_taint.add_sanitize_transform(
+        sanitizer, kind_factory, transforms_factory);
     if (new_callee_frames.is_bottom()) {
       continue;
     }
@@ -181,14 +214,73 @@ Taint Taint::apply_transform(
 }
 
 Taint Taint::update_with_propagation_trace(
+    const CallInfo& propagation_call_info,
     const Frame& propagation_frame) const {
   Taint result;
 
   for (const auto& [_, local_taint] : map_.bindings()) {
-    result.add(local_taint.update_with_propagation_trace(propagation_frame));
+    result.add(local_taint.update_with_propagation_trace(
+        propagation_call_info, propagation_frame));
   }
 
   return result;
+}
+
+void Taint::update_with_extra_trace_and_exploitability_origin(
+    const Taint& extra_trace_taint,
+    FrameType frame_type,
+    const Method* exploitability_root,
+    std::string_view callee,
+    const Position* position) {
+  // Collect all extra-trace frames to add.
+  std::vector<ExtraTrace> extra_traces{};
+  extra_trace_taint.visit_frames(
+      [&extra_traces, frame_type](
+          const CallInfo& source_call_info, const Frame& source_frame) {
+        extra_traces.push_back(ExtraTrace(
+            source_frame.kind(),
+            source_call_info.callee(),
+            source_call_info.call_position(),
+            source_call_info.callee_port(),
+            source_call_info.call_kind(),
+            frame_type));
+      });
+
+  map_.transform(
+      [&extra_traces, exploitability_root, callee, position](
+          LocalTaint* local_taint) -> void {
+        local_taint->transform_frames(
+            [&extra_traces, exploitability_root, callee, position](
+                Frame frame) {
+              frame.add_extra_traces(extra_traces);
+              frame.add_exploitability_origin(
+                  exploitability_root, callee, position);
+              return frame;
+            });
+      });
+}
+
+OriginSet Taint::exploitability_origins() const {
+  OriginSet result{};
+  visit_frames([&result](const CallInfo& /* unused */, const Frame& frame) {
+    result.join_with(frame.exploitability_origins());
+  });
+  return result;
+}
+
+Taint Taint::from_json(const Json::Value& value, Context& context) {
+  JsonValidation::null_or_array(value);
+
+  Map call_info_to_local_taint;
+  for (const auto& taint_json : value) {
+    auto local_taint = LocalTaint::from_json(taint_json, context);
+    call_info_to_local_taint.update(
+        local_taint.call_info(), [&local_taint](LocalTaint* existing_taint) {
+          existing_taint->join_with(local_taint);
+        });
+  }
+
+  return Taint(call_info_to_local_taint);
 }
 
 Json::Value Taint::to_json(ExportOriginsMode export_origins_mode) const {
@@ -228,25 +320,28 @@ void Taint::update_maximum_collapse_depth(CollapseDepth collapse_depth) {
   });
 }
 
-void Taint::update_non_leaf_positions(
-    const std::function<
-        const Position*(const Method*, const AccessPath&, const Position*)>&
-        new_call_position,
+Taint Taint::update_non_declaration_positions(
+    const std::function<const Position*(
+        const Method*,
+        const AccessPath* MT_NULLABLE,
+        const Position* MT_NULLABLE)>& new_call_position,
     const std::function<LocalPositionSet(const LocalPositionSet&)>&
-        new_local_positions) {
+        new_local_positions) const {
   Taint result;
   for (const auto& [_, local_taint] : map_.bindings()) {
-    auto new_local_taint = local_taint;
-    new_local_taint.update_non_leaf_positions(
+    auto new_local_taints = local_taint.update_non_declaration_positions(
         new_call_position, new_local_positions);
-    result.add(new_local_taint);
+    for (const auto& new_local_taint : new_local_taints) {
+      result.add(new_local_taint);
+    }
   }
-  map_ = std::move(result.map_);
+  return result;
 }
 
-void Taint::filter_invalid_frames(
-    const std::function<bool(const Method*, const AccessPath&, const Kind*)>&
-        is_valid) {
+void Taint::filter_invalid_frames(const std::function<bool(
+                                      const Method* MT_NULLABLE,
+                                      const AccessPath* MT_NULLABLE,
+                                      const Kind*)>& is_valid) {
   map_.transform([&is_valid](LocalTaint* local_taint) -> void {
     local_taint->filter_invalid_frames(is_valid);
   });
@@ -265,17 +360,43 @@ std::unordered_map<const Kind*, Taint> Taint::partition_by_kind() const {
   return partition_by_kind<const Kind*>([](const Kind* kind) { return kind; });
 }
 
+std::vector<std::pair<const Kind*, Taint>> Taint::sorted_partition_by_kind()
+    const {
+  auto partitioned_by_kind =
+      partition_by_kind<const Kind*>([](const Kind* kind) { return kind; });
+
+  std::vector<std::pair<const Kind*, Taint>> result{
+      std::make_move_iterator(partitioned_by_kind.begin()),
+      std::make_move_iterator(partitioned_by_kind.end())};
+
+  std::sort(
+      result.begin(), result.end(), [](const auto& left, const auto& right) {
+        return left.first->to_trace_string() < right.first->to_trace_string();
+      });
+
+  return result;
+}
+
 void Taint::intersect_intervals_with(const Taint& other) {
   std::unordered_set<CallClassIntervalContext> other_intervals;
-  for (const auto& other_frame : other.frames_iterator()) {
-    const auto& other_frame_interval = other_frame.class_interval_context();
-    // All frames in `this` will intersect with a frame in `other` that does not
-    // preserve type context.
-    if (!other_frame_interval.preserves_type_context()) {
-      return;
-    }
 
-    other_intervals.insert(other_frame_interval);
+  // Using an exception to break out of the loop early since `visit_frames`
+  // does not allow us to do that.
+  class frame_does_not_preserve_type_context {};
+  try {
+    other.visit_frames([&other_intervals](
+                           const CallInfo&, const Frame& other_frame) {
+      const auto& other_frame_interval = other_frame.class_interval_context();
+      // All frames in `this` will intersect with a frame in `other` that does
+      // not preserve type context.
+      if (!other_frame_interval.preserves_type_context()) {
+        throw frame_does_not_preserve_type_context();
+      }
+
+      other_intervals.insert(other_frame_interval);
+    });
+  } catch (const frame_does_not_preserve_type_context&) {
+    return;
   }
 
   // Keep only frames that intersect with some interval in `other`.
@@ -307,6 +428,21 @@ FeatureMayAlwaysSet Taint::features_joined() const {
   return features;
 }
 
+std::unordered_set<const Kind*> Taint::kinds() const {
+  std::unordered_set<const Kind*> result;
+  visit_kind_frames([&result](const KindFrames& kind_frames) {
+    result.insert(kind_frames.kind());
+  });
+  return result;
+}
+
+void Taint::collapse_class_intervals() {
+  transform_kind_frames([](KindFrames kind_frames) {
+    kind_frames.collapse_class_intervals();
+    return kind_frames;
+  });
+}
+
 Taint Taint::propagation(PropagationConfig propagation) {
   return Taint{TaintConfig(
       /* kind */ propagation.kind(),
@@ -335,7 +471,8 @@ Taint Taint::propagation_taint(
     FeatureSet user_features) {
   return Taint{TaintConfig(
       /* kind */ kind,
-      /* callee_port */ AccessPath(kind->root()),
+      /* callee_port */
+      AccessPathFactory::singleton().get(AccessPath(kind->root())),
       /* callee */ nullptr,
       /* call_kind */ CallKind::propagation(),
       /* call_position */ nullptr,
@@ -355,36 +492,40 @@ Taint Taint::propagation_taint(
 
 Taint Taint::essential() const {
   Taint result;
-  for (const auto& frame : frames_iterator()) {
-    auto callee_port = AccessPath(Root(Root::Kind::Return));
-    CallKind call_kind = CallKind::declaration();
+  const auto* return_callee_port =
+      AccessPathFactory::singleton().get(AccessPath(Root(Root::Kind::Return)));
+  this->visit_frames(
+      [&result, return_callee_port](const CallInfo&, const Frame& frame) {
+        const auto* callee_port = return_callee_port;
+        CallKind call_kind = CallKind::declaration();
 
-    // This is required by structure invariants.
-    if (auto* propagation_kind =
-            frame.kind()->discard_transforms()->as<PropagationKind>()) {
-      callee_port = AccessPath(propagation_kind->root());
-      call_kind = CallKind::propagation();
-    }
+        // This is required by structure invariants.
+        if (auto* propagation_kind =
+                frame.kind()->discard_transforms()->as<PropagationKind>()) {
+          callee_port = AccessPathFactory::singleton().get(
+              AccessPath(propagation_kind->root()));
+          call_kind = CallKind::propagation();
+        }
 
-    result.add(TaintConfig(
-        /* kind */ frame.kind(),
-        /* callee_port */ callee_port,
-        /* callee */ nullptr,
-        /* call_kind */ call_kind,
-        /* call_position */ nullptr,
-        /* class_interval_context */ CallClassIntervalContext(),
-        /* distance */ 0,
-        /* origins */ {},
-        /* inferred_features */ FeatureMayAlwaysSet::bottom(),
-        /* user_features */ FeatureSet::bottom(),
-        /* via_type_of_ports */ {},
-        /* via_value_of_ports */ {},
-        /* canonical_names */ {},
-        /* output_paths */ frame.output_paths(),
-        /* local_positions */ {},
-        /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
-        /* extra_traces */ {}));
-  }
+        result.add(TaintConfig(
+            /* kind */ frame.kind(),
+            /* callee_port */ callee_port,
+            /* callee */ nullptr,
+            /* call_kind */ call_kind,
+            /* call_position */ nullptr,
+            /* class_interval_context */ CallClassIntervalContext(),
+            /* distance */ 0,
+            /* origins */ {},
+            /* inferred_features */ FeatureMayAlwaysSet::bottom(),
+            /* user_features */ FeatureSet::bottom(),
+            /* via_type_of_ports */ {},
+            /* via_value_of_ports */ {},
+            /* canonical_names */ {},
+            /* output_paths */ frame.output_paths(),
+            /* local_positions */ {},
+            /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
+            /* extra_traces */ {}));
+      });
   return result;
 }
 

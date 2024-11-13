@@ -11,6 +11,7 @@
 
 #include <DexUtil.h>
 
+#include <mariana-trench/FrameType.h>
 #include <mariana-trench/Highlights.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/Methods.h>
@@ -23,7 +24,6 @@ namespace marianatrench {
 namespace {
 using Bounds = Highlights::Bounds;
 using FileLines = Highlights::FileLines;
-enum class FrameType { Source, Sink };
 
 /*
  * Given a line and column that is assumed not to be a whitespace's position,
@@ -217,42 +217,56 @@ LocalPositionSet augment_local_positions(
     }
     auto bounds = Highlights::get_local_position_bounds(*local_position, lines);
     new_local_positions.add(context.positions->get(
-        local_position, bounds.line, bounds.start, bounds.end));
+        local_position->path(), bounds.line, bounds.start, bounds.end));
   }
   return Highlights::filter_overlapping_highlights(new_local_positions);
 }
 
 const Position* augment_frame_position(
     const Method* callee,
-    const AccessPath& callee_port,
+    const AccessPath* callee_port,
     const Position* position,
     const FileLines& lines,
     const Context& context) {
   mt_assert(position != nullptr);
   mt_assert(callee != nullptr);
+  mt_assert(callee_port != nullptr);
 
   auto bounds = Highlights::get_callee_highlight_bounds(
-      callee->dex_method(), lines, position->line(), callee_port);
+      callee->dex_method(), lines, position->line(), callee_port->root());
   return context.positions->get(
-      position, bounds.line, bounds.start, bounds.end);
+      position->path(), bounds.line, bounds.start, bounds.end);
 }
 
 Taint augment_taint_positions(
     Taint taint,
     const FileLines& lines,
     const Context& context) {
-  taint.update_non_leaf_positions(
+  return taint.update_non_declaration_positions(
       [&lines, &context](
           const Method* callee,
-          const AccessPath& callee_port,
-          const Position* position) {
+          const AccessPath* MT_NULLABLE callee_port,
+          const Position* MT_NULLABLE position) {
+        if (position == nullptr) {
+          // Unknown position.
+          return position;
+        }
+
+        if (callee_port == nullptr) {
+          // Cannot determine position if callee port is unknown. Return the
+          // original position without instruction and port.
+          return context.positions->get(
+              position->path(),
+              position->line(),
+              position->start(),
+              position->end());
+        }
         return augment_frame_position(
             callee, callee_port, position, lines, context);
       },
       [&lines, &context](const LocalPositionSet& local_positions) {
         return augment_local_positions(local_positions, lines, context);
       });
-  return taint;
 }
 
 TaintAccessPathTree augment_taint_tree_positions(
@@ -266,19 +280,33 @@ TaintAccessPathTree augment_taint_tree_positions(
 }
 
 IssueSet augment_issue_positions(
-    IssueSet issues,
+    const IssueSet& issues,
     const FileLines& lines,
     const Context& context) {
-  issues.transform([&lines, &context](Issue issue) {
-    return Issue(
+  IssueSet result{};
+
+  for (const auto& issue : issues) {
+    // We do not use IssueSet::transform() and instead build a new set here. The
+    // transform() method of the underlying GroupHashedSetAbstractDomain is only
+    // safe if the elements are updated without affecting the grouping. But
+    // since we remove the instruction and port from position, the issue
+    // grouping can potentially change.
+    const auto* issue_position = issue.position();
+    mt_assert(issue_position != nullptr);
+    result.add(Issue(
         augment_taint_positions(issue.sources(), lines, context),
         augment_taint_positions(issue.sinks(), lines, context),
         issue.rule(),
         issue.callee(),
         issue.sink_index(),
-        issue.position());
-  });
-  return issues;
+        context.positions->get(
+            issue_position->path(),
+            issue_position->line(),
+            issue_position->start(),
+            issue_position->end())));
+  }
+
+  return result;
 }
 
 /**
@@ -289,47 +317,52 @@ IssueSet augment_issue_positions(
 void get_frames_files_to_methods(
     ConcurrentMap<const std::string*, std::unordered_set<const Method*>>&
         issue_files_to_methods,
-    const ConcurrentSet<const Frame*>& frames,
+    const ConcurrentSet<const LocalTaint*>& frames,
     const Context& context,
     const Registry& registry,
     FrameType frame_type) {
-  auto frames_to_check = std::make_unique<ConcurrentSet<const Frame*>>(frames);
-  auto seen_frames = std::make_unique<ConcurrentSet<const Frame*>>(frames);
+  auto frames_to_check =
+      std::make_unique<ConcurrentSet<const LocalTaint*>>(frames);
+  auto seen_frames = std::make_unique<ConcurrentSet<const LocalTaint*>>(frames);
 
   while (frames_to_check->size() != 0) {
-    auto new_frames_to_check = std::make_unique<ConcurrentSet<const Frame*>>();
-    auto queue = sparta::work_queue<const Frame*>([&](const Frame* frame) {
-      const auto* callee = frame->callee();
-      if (!callee) {
-        return;
-      }
-      auto callee_model = registry.get(callee);
-      const auto* callee_port = frame->callee_port();
-      const auto* method_position = context.positions->get(callee);
-      if (method_position && method_position->path()) {
-        issue_files_to_methods.update(
-            method_position->path(),
-            [callee](
-                const std::string* /*filepath*/,
-                std::unordered_set<const Method*>& methods,
-                bool) { methods.emplace(callee); });
-      }
+    auto new_frames_to_check =
+        std::make_unique<ConcurrentSet<const LocalTaint*>>();
+    auto queue =
+        sparta::work_queue<const LocalTaint*>([&](const LocalTaint* frame) {
+          const auto* callee = frame->callee();
+          if (!callee) {
+            return;
+          }
+          auto callee_model = registry.get(callee);
+          const auto* callee_port = frame->callee_port();
+          const auto* method_position = context.positions->get(callee);
+          if (method_position && method_position->path()) {
+            issue_files_to_methods.update(
+                method_position->path(),
+                [callee](
+                    const std::string* /*filepath*/,
+                    std::unordered_set<const Method*>& methods,
+                    bool) { methods.emplace(callee); });
+          }
 
-      Taint taint;
-      if (frame_type == FrameType::Source) {
-        taint = callee_model.generations().raw_read(*callee_port).root();
-      } else if (frame_type == FrameType::Sink) {
-        taint = callee_model.sinks().raw_read(*callee_port).root();
-      }
-      for (const auto& callee_frame : taint.frames_iterator()) {
-        if (callee_frame.is_leaf() || !seen_frames->emplace(&callee_frame)) {
-          continue;
-        }
-        new_frames_to_check->emplace(&callee_frame);
-      }
-    });
-    for (const auto& frame : *frames_to_check) {
-      queue.add_item(frame);
+          Taint taint;
+          if (frame_type == FrameType::source()) {
+            taint = callee_model.generations().raw_read(*callee_port).root();
+          } else if (frame_type == FrameType::sink()) {
+            taint = callee_model.sinks().raw_read(*callee_port).root();
+          }
+          taint.visit_local_taint([&seen_frames, &new_frames_to_check](
+                                      const LocalTaint& local_taint) {
+            if (local_taint.callee() == nullptr ||
+                !seen_frames->emplace(&local_taint)) {
+              return;
+            }
+            new_frames_to_check->emplace(&local_taint);
+          });
+        });
+    for (const auto* taint : *frames_to_check) {
+      queue.add_item(taint);
     }
     queue.run_all();
     frames_to_check = std::move(new_frames_to_check);
@@ -346,8 +379,8 @@ ConcurrentMap<const std::string*, std::unordered_set<const Method*>>
 get_issue_files_to_methods(const Context& context, const Registry& registry) {
   ConcurrentMap<const std::string*, std::unordered_set<const Method*>>
       issue_files_to_methods;
-  ConcurrentSet<const Frame*> sources;
-  ConcurrentSet<const Frame*> sinks;
+  ConcurrentSet<const LocalTaint*> sources;
+  ConcurrentSet<const LocalTaint*> sinks;
 
   auto queue = sparta::work_queue<const Method*>([&](const Method* method) {
     auto model = registry.get(method);
@@ -356,18 +389,19 @@ get_issue_files_to_methods(const Context& context, const Registry& registry) {
     }
     for (const auto& issue : model.issues()) {
       const auto& issue_sinks = issue.sinks();
-      for (const auto& sink : issue_sinks.frames_iterator()) {
-        if (!sink.is_leaf()) {
-          sinks.emplace(&sink);
+      issue_sinks.visit_local_taint([&sinks](const LocalTaint& local_taint) {
+        if (!local_taint.call_info().is_leaf()) {
+          sinks.emplace(&local_taint);
         }
-      }
+      });
 
       const auto& issue_sources = issue.sources();
-      for (const auto& source : issue_sources.frames_iterator()) {
-        if (!source.is_leaf()) {
-          sources.emplace(&source);
-        }
-      }
+      issue_sources.visit_local_taint(
+          [&sources](const LocalTaint& local_taint) {
+            if (!local_taint.call_info().is_leaf()) {
+              sources.emplace(&local_taint);
+            }
+          });
     }
     auto* method_position = context.positions->get(method);
     if (!method_position || !method_position->path()) {
@@ -386,9 +420,9 @@ get_issue_files_to_methods(const Context& context, const Registry& registry) {
   queue.run_all();
 
   get_frames_files_to_methods(
-      issue_files_to_methods, sources, context, registry, FrameType::Source);
+      issue_files_to_methods, sources, context, registry, FrameType::source());
   get_frames_files_to_methods(
-      issue_files_to_methods, sinks, context, registry, FrameType::Sink);
+      issue_files_to_methods, sinks, context, registry, FrameType::sink());
   return issue_files_to_methods;
 }
 
@@ -443,7 +477,7 @@ Bounds Highlights::get_local_position_bounds(
         callee_dex_method->as_def(),
         lines,
         local_position.line(),
-        AccessPath(*local_position.port()));
+        *local_position.port());
   }
   return empty_bounds;
 }
@@ -452,7 +486,7 @@ Bounds Highlights::get_callee_highlight_bounds(
     const DexMethod* callee,
     const FileLines& lines,
     int callee_line_number,
-    const AccessPath& callee_port) {
+    const Root& callee_port_root) {
   if (!lines.has_line_number(callee_line_number)) {
     WARNING(
         3,
@@ -480,56 +514,19 @@ Bounds Highlights::get_callee_highlight_bounds(
       callee_line_number,
       static_cast<int>(callee_start),
       static_cast<int>(callee_end)};
-  if (!callee_port.root().is_argument() ||
-      (method::is_init(callee) &&
-       callee_port.root().parameter_position() == 0)) {
+  if (!callee_port_root.is_argument() ||
+      (method::is_init(callee) && callee_port_root.parameter_position() == 0)) {
     return callee_name_bounds;
   }
   bool is_static = ::is_static(callee);
-  if (callee_port.root().parameter_position() == 0 && !is_static) {
+  if (callee_port_root.parameter_position() == 0 && !is_static) {
     return get_callee_this_parameter_bounds(line, callee_name_bounds);
   }
   return get_argument_bounds(
-      callee_port.root().parameter_position(),
+      callee_port_root.parameter_position(),
       is_static ? 0 : 1,
       lines,
       callee_name_bounds);
-}
-
-void Highlights::augment_positions(Registry& registry, const Context& context) {
-  auto current_path = boost::filesystem::current_path();
-  boost::filesystem::current_path(context.options->source_root_directory());
-
-  auto issue_files_to_methods = get_issue_files_to_methods(context, registry);
-  auto file_queue =
-      sparta::work_queue<const std::string*>([&](const std::string* filepath) {
-        std::ifstream stream(*filepath);
-        if (stream.bad()) {
-          WARNING(1, "File {} was not found.", *filepath);
-          return;
-        }
-        auto lines = FileLines(stream);
-        for (const auto* method : issue_files_to_methods.get(filepath, {})) {
-          const auto old_model = registry.get(method);
-          auto new_model = old_model;
-          new_model.set_issues(
-              augment_issue_positions(old_model.issues(), lines, context));
-          new_model.set_sinks(
-              augment_taint_tree_positions(old_model.sinks(), lines, context));
-          new_model.set_generations(augment_taint_tree_positions(
-              old_model.generations(), lines, context));
-          new_model.set_parameter_sources(augment_taint_tree_positions(
-              old_model.parameter_sources(), lines, context));
-          registry.set(new_model);
-        }
-      });
-
-  for (const auto& [filepath, _] : issue_files_to_methods) {
-    file_queue.add_item(filepath);
-  }
-  file_queue.run_all();
-
-  boost::filesystem::current_path(current_path);
 }
 
 LocalPositionSet Highlights::filter_overlapping_highlights(
@@ -575,6 +572,42 @@ LocalPositionSet Highlights::filter_overlapping_highlights(
     }
   }
   return new_local_positions;
+}
+
+void Highlights::augment_positions(Registry& registry, const Context& context) {
+  auto current_path = std::filesystem::current_path();
+  std::filesystem::current_path(context.options->source_root_directory());
+
+  auto issue_files_to_methods = get_issue_files_to_methods(context, registry);
+  auto file_queue =
+      sparta::work_queue<const std::string*>([&](const std::string* filepath) {
+        std::ifstream stream(*filepath);
+        if (stream.bad()) {
+          WARNING(1, "File {} was not found.", *filepath);
+          return;
+        }
+        auto lines = FileLines(stream);
+        for (const auto* method : issue_files_to_methods.get(filepath, {})) {
+          const auto old_model = registry.get(method);
+          auto new_model = old_model;
+          new_model.set_issues(
+              augment_issue_positions(old_model.issues(), lines, context));
+          new_model.set_sinks(
+              augment_taint_tree_positions(old_model.sinks(), lines, context));
+          new_model.set_generations(augment_taint_tree_positions(
+              old_model.generations(), lines, context));
+          new_model.set_parameter_sources(augment_taint_tree_positions(
+              old_model.parameter_sources(), lines, context));
+          registry.set(new_model);
+        }
+      });
+
+  for (const auto& [filepath, _] : issue_files_to_methods) {
+    file_queue.add_item(filepath);
+  }
+  file_queue.run_all();
+
+  std::filesystem::current_path(current_path);
 }
 
 } // namespace marianatrench

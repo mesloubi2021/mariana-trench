@@ -43,8 +43,8 @@ Model source_first_argument(
       AccessPath(Root(Root::Kind::Argument, 1)),
       generator::source(
           context,
-          method,
-          /* kind */ "ServiceUserInput"));
+          /* kind */ "ServiceUserInput"),
+      *context.heuristics);
   return model;
 }
 
@@ -63,7 +63,7 @@ std::vector<Model> ServiceSourceGenerator::emit_method_models(
 
     for (const auto& tag_info : manifest_class_info.component_tags) {
       if (tag_info.tag == ComponentTag::Service) {
-        auto* dex_class = redex::get_class(tag_info.classname);
+        const auto* dex_class = redex::get_class(tag_info.classname);
         if (dex_class) {
           std::unordered_set<std::string_view> parent_classes =
               generator::get_custom_parents_from_class(dex_class);

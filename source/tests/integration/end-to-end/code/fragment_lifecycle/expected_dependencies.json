@@ -64,11 +64,10 @@
   ],
   "Lcom/facebook/marianatrench/integrationtests/BaseFragment;.onCreate:(Landroid/os/Bundle;)V" : 
   [
-    "Lcom/facebook/marianatrench/integrationtests/BaseFragment;.activity_lifecycle_wrapper:(Landroid/os/Bundle;)V"
+    "Lcom/facebook/marianatrench/integrationtests/ChildFragment;.activity_lifecycle_wrapper:(Landroid/os/Bundle;)V"
   ],
   "Lcom/facebook/marianatrench/integrationtests/BaseFragment;.onStart:()V" : 
   [
-    "Lcom/facebook/marianatrench/integrationtests/BaseFragment;.activity_lifecycle_wrapper:(Landroid/os/Bundle;)V",
     "Lcom/facebook/marianatrench/integrationtests/ChildFragment;.onStart:()V"
   ],
   "Lcom/facebook/marianatrench/integrationtests/ChildFragment;.onActivityCreate:()V" : 
@@ -82,6 +81,10 @@
   "Lcom/facebook/marianatrench/integrationtests/ChildFragment;.onBeforeActivityCreate:()V" : 
   [
     "Lcom/facebook/marianatrench/integrationtests/BaseFragment;.onCreate:(Landroid/os/Bundle;)V"
+  ],
+  "Lcom/facebook/marianatrench/integrationtests/ChildFragment;.onStart:()V" : 
+  [
+    "Lcom/facebook/marianatrench/integrationtests/ChildFragment;.activity_lifecycle_wrapper:(Landroid/os/Bundle;)V"
   ],
   "Lcom/facebook/marianatrench/integrationtests/Origin;.sink:(Ljava/lang/Object;)V" : 
   [
@@ -155,7 +158,8 @@
     "Ljava/lang/StringBuilder;.<init>:()V",
     "Ljava/lang/Thread;.<init>:(Ljava/lang/Runnable;)V",
     "Ljava/text/MessageFormat;.<init>:()V",
-    "Ljava/util/TreeMap;.<init>:()V"
+    "Ljava/util/TreeMap;.<init>:()V",
+    "Lkotlin/jvm/internal/Intrinsics;.<init>:()V"
   ],
   "Ljava/lang/Runnable;.run:()V" : 
   [

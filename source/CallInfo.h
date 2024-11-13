@@ -9,11 +9,27 @@
 
 #include <mariana-trench/CallKind.h>
 #include <mariana-trench/Method.h>
+#include <mariana-trench/OriginSet.h>
 #include <mariana-trench/PointerIntPair.h>
 #include <mariana-trench/Position.h>
 
 namespace marianatrench {
 
+/**
+ * Represents a "next hop" in a trace.
+ *
+ * The `callee_port` is the port to the next method in the trace, or
+ * `Root::Kind::Leaf` for a leaf frame.
+ *
+ * `call_kind`. See `CallKind`.
+ *
+ * `callee` is the next method in the trace. This is `nullptr` for a leaf frame.
+ *
+ * `call_position` is the position of the call to the `callee`. This is
+ * `nullptr` for a leaf frame. This can be non-null for leaf frames inside
+ * issues, to describe the position of a parameter source or return sink.
+ *
+ */
 class CallInfo final {
  private:
   using MethodCallKindPair =
@@ -27,7 +43,12 @@ class CallInfo final {
       const Position* MT_NULLABLE call_position)
       : method_call_kind_(callee, call_kind.encode()),
         callee_port_(callee_port),
-        call_position_(call_position) {}
+        call_position_(call_position) {
+    if (callee != nullptr) {
+      mt_assert(callee_port_ != nullptr);
+      mt_assert(call_kind.is_callsite());
+    }
+  }
 
   INCLUDE_DEFAULT_COPY_CONSTRUCTORS_AND_ASSIGNMENTS(CallInfo)
 
@@ -55,6 +76,19 @@ class CallInfo final {
   static CallInfo make_default() {
     return CallInfo(nullptr, CallKind::declaration(), nullptr, nullptr);
   }
+
+  bool is_leaf() const {
+    return call_kind().is_origin();
+  }
+
+  CallInfo propagate(
+      const Method* MT_NULLABLE callee,
+      const AccessPath* MT_NULLABLE callee_port,
+      const Position* call_position,
+      Context& context) const;
+
+  static CallInfo from_json(const Json::Value& value, Context& context);
+  Json::Value to_json() const;
 
   friend bool operator==(const CallInfo& self, const CallInfo& other);
 

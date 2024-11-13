@@ -44,6 +44,7 @@ Context test_dependencies(const Scope& scope) {
       /* model_generator_search_paths */ std::vector<std::string>{},
       /* remove_unreachable_code */ false,
       /* emit_all_via_cast_features */ false);
+  CachedModelsContext cached_models_context(context, *context.options);
   DexStore store("test_store");
   store.add_classes(scope);
   context.stores = {store};
@@ -51,29 +52,34 @@ Context test_dependencies(const Scope& scope) {
       *context.kind_factory, context.stores);
   context.methods = std::make_unique<Methods>(context.stores);
   MethodMappings method_mappings{*context.methods};
-  auto intent_routing_analyzer = IntentRoutingAnalyzer::run(context);
   context.control_flow_graphs =
       std::make_unique<ControlFlowGraphs>(context.stores);
   context.types = std::make_unique<Types>(*context.options, context.stores);
-  context.class_hierarchies =
-      std::make_unique<ClassHierarchies>(*context.options, context.stores);
+  context.class_hierarchies = std::make_unique<ClassHierarchies>(
+      *context.options, context.stores, cached_models_context);
   context.overrides = std::make_unique<Overrides>(
-      *context.options, *context.methods, context.stores);
+      *context.options,
+      *context.methods,
+      context.stores,
+      cached_models_context);
   context.fields = std::make_unique<Fields>();
   context.call_graph = std::make_unique<CallGraph>(
       *context.options,
-      *context.methods,
-      *context.fields,
       *context.types,
       *context.class_hierarchies,
-      *context.overrides,
+      LifecycleMethods{},
+      Shims{/* global_shims_size */ 0},
       *context.feature_factory,
-      Shims{/* global_shims_size */ 0, intent_routing_analyzer},
+      *context.heuristics,
+      *context.methods,
+      *context.fields,
+      *context.overrides,
       method_mappings);
   context.rules = std::make_unique<Rules>(context);
   auto registry = Registry(context);
   context.dependencies = std::make_unique<Dependencies>(
       *context.options,
+      *context.heuristics,
       *context.methods,
       *context.overrides,
       *context.call_graph,
@@ -514,18 +520,31 @@ TEST_F(DependenciesTest, VirtualCallResolution) {
       /* parameter_types */ "LData;",
       /* return_type */ "V",
       /* super */ dex_override_one->get_class());
+  auto* dex_override_three = redex::create_void_method(
+      scope,
+      "LSubclassThree;",
+      "callee",
+      /* parameter_types */ "LData;",
+      /* return_type */ "V",
+      /* super */ dex_override_one->get_class());
 
   auto* dex_caller = redex::create_method(
       scope,
       "LCaller;",
       R"(
-      (method (public) "LCaller;.caller:()V"
+      (method (public) "LCaller;.caller:(LData;Z)V"
        (
         (load-param-object v1)
-
+        (load-param-object v2)
+        (if-eqz v2 :label)
         (new-instance "LSubclassOne;")
         (move-result-object v0)
-
+        (goto :call)
+        (:label)
+        (new-instance "LSubclassTwo;")
+        (move-result-object v0)
+        (goto :call)
+        (:call)
         (invoke-virtual (v0 v1) "LCallee;.callee:(LData;)V")
         (return-void)
        )
@@ -540,13 +559,16 @@ TEST_F(DependenciesTest, VirtualCallResolution) {
   auto* callee = context.methods->get(dex_callee);
   auto* override_one = context.methods->get(dex_override_one);
   auto* override_two = context.methods->get(dex_override_two);
+  auto* override_three = context.methods->get(dex_override_three);
   auto* caller = context.methods->get(dex_caller);
 
   EXPECT_THAT(
       overrides.get(callee),
-      testing::UnorderedElementsAre(override_one, override_two));
+      testing::UnorderedElementsAre(
+          override_one, override_two, override_three));
   EXPECT_THAT(
-      overrides.get(override_one), testing::UnorderedElementsAre(override_two));
+      overrides.get(override_one),
+      testing::UnorderedElementsAre(override_two, override_three));
   EXPECT_TRUE(overrides.get(override_two).empty());
   EXPECT_TRUE(overrides.get(caller).empty());
 
@@ -569,6 +591,7 @@ TEST_F(DependenciesTest, VirtualCallResolution) {
   EXPECT_THAT(
       dependencies.dependencies(override_two),
       testing::UnorderedElementsAre(caller));
+  EXPECT_TRUE(dependencies.dependencies(override_three).empty());
   EXPECT_TRUE(dependencies.dependencies(caller).empty());
 }
 
@@ -626,6 +649,7 @@ TEST_F(DependenciesTest, NoJoinVirtualOverrides) {
 
   context.dependencies = std::make_unique<Dependencies>(
       *context.options,
+      *context.heuristics,
       *context.methods,
       *context.overrides,
       *context.call_graph,
@@ -826,15 +850,21 @@ TEST_F(DependenciesTest, ArtificialCalleesInvoke) {
       call_graph.artificial_callees(caller).begin()->second,
       (ArtificialCallees{
           ArtificialCallee{
-              /* call_target */ CallTarget::static_call(
-                  invoke, anonymous_one, /* call_index */ 0),
+              /* call_target */ CallTarget::direct_call(
+                  invoke,
+                  anonymous_one,
+                  /* call_index */ 0,
+                  anonymous_one->parameter_type(0)),
               /* root_registers */ {{Root::argument(0), 1}},
               /* features */
               FeatureSet{context.feature_factory->get(
                   "via-anonymous-class-to-obscure")}},
           ArtificialCallee{
-              /* call_target */ CallTarget::static_call(
-                  invoke, anonymous_two, /* call_index */ 0),
+              /* call_target */ CallTarget::direct_call(
+                  invoke,
+                  anonymous_two,
+                  /* call_index */ 0,
+                  anonymous_two->parameter_type(0)),
               /* root_registers */ {{Root::argument(0), 1}},
               /* features */
               FeatureSet{context.feature_factory->get(
@@ -931,15 +961,21 @@ TEST_F(DependenciesTest, ArtificialCalleesIput) {
       call_graph.artificial_callees(task).begin()->second,
       (ArtificialCallees{
           ArtificialCallee{
-              /* call_target */ CallTarget::static_call(
-                  iput, anonymous_one, /* call_index */ 0),
+              /* call_target */ CallTarget::direct_call(
+                  iput,
+                  anonymous_one,
+                  /* call_index */ 0,
+                  anonymous_one->parameter_type(0)),
               /* root_registers */ {{Root::argument(0), 1}},
               /* features */
               FeatureSet{context.feature_factory->get(
                   "via-anonymous-class-to-field")}},
           ArtificialCallee{
-              /* call_target */ CallTarget::static_call(
-                  iput, anonymous_two, /* call_index */ 0),
+              /* call_target */ CallTarget::direct_call(
+                  iput,
+                  anonymous_two,
+                  /* call_index */ 0,
+                  anonymous_two->parameter_type(0)),
               /* root_registers */ {{Root::argument(0), 1}},
               /* features */
               FeatureSet{context.feature_factory->get(

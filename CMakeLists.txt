@@ -38,6 +38,19 @@ elseif (LINK_TYPE STREQUAL "Shared")
   endif()
 endif()
 
+option(SANITIZER "Enable address and undefined sanitizers" OFF)
+if (SANITIZER)
+    add_compile_options(
+        "$<$<CONFIG:DEBUG>:-fsanitize=address>"
+        "$<$<CONFIG:DEBUG>:-fsanitize=undefined>"
+        "$<$<CONFIG:DEBUG>:-fno-omit-frame-pointer>"
+    )
+    add_link_options(
+        "$<$<CONFIG:DEBUG>:-fsanitize=address>"
+        "$<$<CONFIG:DEBUG>:-fsanitize=undefined>"
+    )
+endif()
+
 message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Link type: ${LINK_TYPE}")
@@ -56,11 +69,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if (POLICY CMP0144)
+  cmake_policy(SET CMP0144 NEW)
+endif ()
+
 # Dependencies
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(Boost 1.75.0 REQUIRED
-             COMPONENTS system regex filesystem program_options iostreams thread)
+             COMPONENTS system filesystem regex program_options iostreams thread)
 # CMake's provided `FindGTest.cmake` does not define GMock.
 # We use `CONFIG` to find the `GTestConfig.cmake` provided by gtest, which properly defines GMock.
 find_package(GTest 1.10.0 REQUIRED CONFIG)
@@ -101,7 +118,6 @@ target_link_libraries(mariana-trench-library PUBLIC
                       ZLIB::ZLIB
                       Boost::system
                       Boost::regex
-                      Boost::filesystem
                       Boost::program_options
                       Boost::iostreams
                       Boost::thread
@@ -109,7 +125,8 @@ target_link_libraries(mariana-trench-library PUBLIC
                       JsonCpp::JsonCpp
                       fmt::fmt
                       re2::re2
-                      Redex::LibTool)
+                      Redex::LibTool
+                      Boost::filesystem)
 target_include_directories(mariana-trench-library PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/header-tree")
 
 add_executable(mariana-trench-binary "source/Main.cpp")
@@ -137,7 +154,7 @@ target_link_libraries(mariana-trench-unit-tests PUBLIC
                       GTest::gmock
                       GTest::gtest_main)
 add_dependencies(build-tests mariana-trench-unit-tests)
-gtest_discover_tests(mariana-trench-unit-tests)
+gtest_discover_tests(mariana-trench-unit-tests PROPERTIES DISCOVERY_TIMEOUT 600)
 
 file(GLOB model_generator_test_sources "source/model-generator/tests/*.cpp")
 add_executable(mariana-trench-model-generator-tests EXCLUDE_FROM_ALL ${model_generator_test_sources})
@@ -146,7 +163,7 @@ target_link_libraries(mariana-trench-model-generator-tests PUBLIC
                       GTest::gmock
                       GTest::gtest_main)
 add_dependencies(build-tests mariana-trench-model-generator-tests)
-gtest_discover_tests(mariana-trench-model-generator-tests)
+gtest_discover_tests(mariana-trench-model-generator-tests PROPERTIES DISCOVERY_TIMEOUT 600)
 
 add_executable(mariana-trench-integration-test-models EXCLUDE_FROM_ALL
                "source/tests/integration/models/IntegrationTest.cpp")
@@ -155,7 +172,7 @@ target_link_libraries(mariana-trench-integration-test-models PUBLIC
                       GTest::gmock
                       GTest::gtest_main)
 add_dependencies(build-tests mariana-trench-integration-test-models)
-gtest_discover_tests(mariana-trench-integration-test-models)
+gtest_discover_tests(mariana-trench-integration-test-models PROPERTIES DISCOVERY_TIMEOUT 600)
 
 find_package(Java)
 find_package(AndroidSDK)
@@ -166,6 +183,11 @@ elseif (NOT AndroidSDK_FOUND)
   message(STATUS "Integration tests are disable because Android SDK could not be found.")
 else()
   include(UseJava)
+
+  # Some test cases fail if switching to D8 as D8 seems to do more local optimization, etc.
+  # Add tests that require the use of LEGACY DX too. When adding tests, please document the
+  # differences between the two dexers.
+  set(LEGACY_DX_TESTS "end-to-end-field_tito_fp;")
 
   function(generate_integration_test_code root_directory test_directory name)
     # Target that compiles the source to a .jar
@@ -178,14 +200,31 @@ else()
     set_property(TARGET java-class-${name} PROPERTY EXCLUDE_FROM_ALL TRUE)
 
     # Target that compiles the .jar to a .dex
-    add_custom_command(OUTPUT java-dex-${name}.dex
-                       COMMAND
-                         ${ANDROID_DX}
-                         --core-library
-                         --dex
-                         --output=java-dex-${name}.dex
-                         $<TARGET_PROPERTY:java-class-${name},JAR_FILE>
-                       DEPENDS java-class-${name})
+    if (name IN_LIST LEGACY_DX_TESTS)
+      message(STATUS "USING DX ${name}")
+      add_custom_command(OUTPUT java-dex-${name}.dex
+                        COMMAND
+                          ${ANDROID_DX}
+                          --core-library
+                          --dex
+                          --output=java-dex-${name}.dex
+                          $<TARGET_PROPERTY:java-class-${name},JAR_FILE>
+                        DEPENDS java-class-${name})
+    else()
+      message(STATUS "USING D8 ${name}")
+      add_custom_command(OUTPUT java-dex-${name}.dex
+                        COMMAND
+                          mkdir java-dex-${name}-tmp
+                        COMMAND
+                          ${ANDROID_D8}
+                          $<TARGET_PROPERTY:java-class-${name},JAR_FILE>
+                          --output java-dex-${name}-tmp/
+                        COMMAND
+                          mv java-dex-${name}-tmp/classes.dex java-dex-${name}.dex
+                        COMMAND
+                          rm -r java-dex-${name}-tmp
+                        DEPENDS java-class-${name})
+    endif()
     add_custom_target(java-dex-${name} DEPENDS java-dex-${name}.dex)
     set_property(TARGET java-dex-${name} PROPERTY EXCLUDE_FROM_ALL TRUE)
   endfunction()
@@ -206,7 +245,7 @@ else()
       add_dependencies(mariana-trench-integration-test-${directory} "java-dex-${directory}-${name}")
       list(APPEND test_properties ENVIRONMENT "${name}=java-dex-${directory}-${name}.dex")
     endforeach()
-    gtest_discover_tests(mariana-trench-integration-test-${directory} PROPERTIES "${test_properties}")
+    gtest_discover_tests(mariana-trench-integration-test-${directory} PROPERTIES "${test_properties}" DISCOVERY_TIMEOUT 600)
   endfunction()
 
   generate_integration_test(end-to-end)

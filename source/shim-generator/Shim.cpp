@@ -8,6 +8,7 @@
 #include <algorithm>
 
 #include <Show.h>
+#include <TypeUtil.h>
 
 #include <mariana-trench/Assert.h>
 #include <mariana-trench/Log.h>
@@ -16,6 +17,14 @@
 
 namespace marianatrench {
 namespace {
+
+static const InstantiatedShim::FlatSet<ShimTarget> empty_shim_targets;
+
+static const InstantiatedShim::FlatSet<ShimLifecycleTarget>
+    empty_lifecycle_targets;
+
+static const InstantiatedShim::FlatSet<ShimReflectionTarget>
+    empty_reflection_targets;
 
 bool verify_has_parameter_type(
     std::string_view method_name,
@@ -88,6 +97,16 @@ std::optional<ShimParameterPosition> ShimMethod::type_position(
 ShimParameterMapping::ShimParameterMapping(
     std::initializer_list<MapType::value_type> init)
     : map_(init), infer_from_types_(false) {}
+
+bool ShimParameterMapping::operator==(const ShimParameterMapping& other) const {
+  return infer_from_types_ == other.infer_from_types_ && map_ == other.map_;
+}
+
+bool ShimParameterMapping::operator<(const ShimParameterMapping& other) const {
+  // Lexicographic comparison
+  return std::tie(infer_from_types_, map_) <
+      std::tie(other.infer_from_types_, other.map_);
+}
 
 bool ShimParameterMapping::empty() const {
   return map_.empty();
@@ -204,13 +223,52 @@ ShimParameterMapping ShimParameterMapping::instantiate_parameters(
 }
 
 ShimTarget::ShimTarget(
+    DexMethodSpec method_spec,
+    ShimParameterMapping parameter_mapping,
+    bool is_static)
+    : method_spec_(std::move(method_spec)),
+      parameter_mapping_(std::move(parameter_mapping)),
+      is_static_(is_static) {
+  mt_assert(
+      method_spec_.cls != nullptr && method_spec_.name != nullptr &&
+      method_spec_.proto != nullptr);
+}
+
+ShimTarget::ShimTarget(
     const Method* method,
     ShimParameterMapping parameter_mapping)
-    : call_target_(method), parameter_mapping_(std::move(parameter_mapping)) {}
+    : ShimTarget(
+          DexMethodSpec{
+              method->get_class(),
+              DexString::get_string(method->get_name()),
+              method->get_proto()},
+          std::move(parameter_mapping),
+          method->is_static()) {}
+
+bool ShimTarget::operator==(const ShimTarget& other) const {
+  return is_static_ == other.is_static_ && method_spec_ == other.method_spec_ &&
+      parameter_mapping_ == other.parameter_mapping_;
+}
+
+bool ShimTarget::operator<(const ShimTarget& other) const {
+  // Lexicographic comparison
+  return std::tie(
+             is_static_,
+             method_spec_.cls,
+             method_spec_.name,
+             method_spec_.proto,
+             parameter_mapping_) <
+      std::tie(
+             other.is_static_,
+             other.method_spec_.cls,
+             other.method_spec_.name,
+             other.method_spec_.proto,
+             other.parameter_mapping_);
+}
 
 std::optional<Register> ShimTarget::receiver_register(
     const IRInstruction* instruction) const {
-  if (call_target_->is_static()) {
+  if (is_static_) {
     return std::nullopt;
   }
 
@@ -240,15 +298,37 @@ ShimReflectionTarget::ShimReflectionTarget(
     DexMethodSpec method_spec,
     ShimParameterMapping parameter_mapping)
     : method_spec_(method_spec),
-      parameter_mapping_(std::move(parameter_mapping)) {}
+      parameter_mapping_(std::move(parameter_mapping)) {
+  mt_assert(
+      method_spec_.cls == type::java_lang_Class() &&
+      method_spec_.name != nullptr && method_spec_.proto != nullptr);
+  mt_assert_log(
+      parameter_mapping_.contains(Root::argument(0)),
+      "Missing parameter mapping for receiver for reflection shim target");
+}
 
-std::optional<Register> ShimReflectionTarget::receiver_register(
+bool ShimReflectionTarget::operator==(const ShimReflectionTarget& other) const {
+  return method_spec_ == other.method_spec_ &&
+      parameter_mapping_ == other.parameter_mapping_;
+}
+
+bool ShimReflectionTarget::operator<(const ShimReflectionTarget& other) const {
+  // Lexicographic comparison
+  return std::tie(
+             method_spec_.cls,
+             method_spec_.name,
+             method_spec_.proto,
+             parameter_mapping_) <
+      std::tie(
+             other.method_spec_.cls,
+             other.method_spec_.name,
+             other.method_spec_.proto,
+             other.parameter_mapping_);
+}
+
+Register ShimReflectionTarget::receiver_register(
     const IRInstruction* instruction) const {
   auto receiver_position = parameter_mapping_.at(Root::argument(0));
-  if (!receiver_position) {
-    return std::nullopt;
-  }
-
   mt_assert(*receiver_position < instruction->srcs_size());
 
   return instruction->src(*receiver_position);
@@ -284,6 +364,27 @@ ShimLifecycleTarget::ShimLifecycleTarget(
       receiver_position_(std::move(receiver_position)),
       is_reflection_(is_reflection),
       infer_from_types_(infer_from_types) {}
+
+bool ShimLifecycleTarget::operator==(const ShimLifecycleTarget& other) const {
+  return infer_from_types_ == other.infer_from_types_ &&
+      is_reflection_ == other.is_reflection_ &&
+      receiver_position_ == other.receiver_position_ &&
+      method_name_ == other.method_name_;
+}
+
+bool ShimLifecycleTarget::operator<(const ShimLifecycleTarget& other) const {
+  // Lexicographic comparison
+  return std::tie(
+             infer_from_types_,
+             is_reflection_,
+             receiver_position_,
+             method_name_) <
+      std::tie(
+             other.infer_from_types_,
+             other.is_reflection_,
+             other.receiver_position_,
+             other.method_name_);
+}
 
 Register ShimLifecycleTarget::receiver_register(
     const IRInstruction* instruction) const {
@@ -332,21 +433,55 @@ InstantiatedShim::InstantiatedShim(const Method* method) : method_(method) {}
 
 void InstantiatedShim::add_target(ShimTargetVariant target) {
   if (std::holds_alternative<ShimTarget>(target)) {
-    targets_.push_back(std::get<ShimTarget>(target));
+    targets_.emplace(std::get<ShimTarget>(target));
   } else if (std::holds_alternative<ShimReflectionTarget>(target)) {
-    reflections_.push_back(std::get<ShimReflectionTarget>(target));
+    reflections_.emplace(std::get<ShimReflectionTarget>(target));
   } else if (std::holds_alternative<ShimLifecycleTarget>(target)) {
-    lifecycles_.push_back(std::get<ShimLifecycleTarget>(target));
+    lifecycles_.emplace(std::get<ShimLifecycleTarget>(target));
   } else {
     mt_unreachable();
   }
 }
 
+void InstantiatedShim::merge_with(InstantiatedShim other) {
+  targets_.insert(
+      std::make_move_iterator(other.targets_.begin()),
+      std::make_move_iterator(other.targets_.end()));
+  reflections_.insert(
+      std::make_move_iterator(other.reflections_.begin()),
+      std::make_move_iterator(other.reflections_.end()));
+  lifecycles_.insert(
+      std::make_move_iterator(other.lifecycles_.begin()),
+      std::make_move_iterator(other.lifecycles_.end()));
+}
+
 Shim::Shim(
     const InstantiatedShim* MT_NULLABLE instantiated_shim,
-    std::vector<ShimTarget> intent_routing_targets)
+    InstantiatedShim::FlatSet<ShimTarget> intent_routing_targets)
     : instantiated_shim_(instantiated_shim),
       intent_routing_targets_(std::move(intent_routing_targets)) {}
+
+const InstantiatedShim::FlatSet<ShimTarget>& Shim::targets() const {
+  if (instantiated_shim_ == nullptr) {
+    return empty_shim_targets;
+  }
+  return instantiated_shim_->targets();
+}
+
+const InstantiatedShim::FlatSet<ShimReflectionTarget>& Shim::reflections()
+    const {
+  if (instantiated_shim_ == nullptr) {
+    return empty_reflection_targets;
+  }
+  return instantiated_shim_->reflections();
+}
+
+const InstantiatedShim::FlatSet<ShimLifecycleTarget>& Shim::lifecycles() const {
+  if (instantiated_shim_ == nullptr) {
+    return empty_lifecycle_targets;
+  }
+  return instantiated_shim_->lifecycles();
+}
 
 std::ostream& operator<<(std::ostream& out, const ShimMethod& shim_method) {
   out << "ShimMethod(method=`";
@@ -369,10 +504,12 @@ std::ostream& operator<<(std::ostream& out, const ShimParameterMapping& map) {
 }
 
 std::ostream& operator<<(std::ostream& out, const ShimTarget& shim_target) {
-  out << "ShimTarget(method=`";
-  if (shim_target.call_target_ != nullptr) {
-    out << shim_target.call_target_->show();
-  }
+  out << "ShimTarget(type=`";
+  out << show(shim_target.method_spec_.cls);
+  out << "`, method_name=`";
+  out << show(shim_target.method_spec_.name);
+  out << "`, proto=`";
+  out << show(shim_target.method_spec_.proto);
   out << "`";
   out << ", " << shim_target.parameter_mapping_;
   return out << ")";
@@ -439,7 +576,9 @@ std::ostream& operator<<(std::ostream& out, const InstantiatedShim& shim) {
 
 std::ostream& operator<<(std::ostream& out, const Shim& shim) {
   out << "Shim(shim=`";
-  out << *(shim.instantiated_shim_);
+  if (shim.instantiated_shim_) {
+    out << *(shim.instantiated_shim_);
+  }
   out << "`";
 
   if (!shim.intent_routing_targets().empty()) {

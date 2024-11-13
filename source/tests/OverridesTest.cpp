@@ -36,6 +36,7 @@ Context test_overrides(const Scope& scope) {
       /* model_generator_search_paths */ std::vector<std::string>{},
       /* remove_unreachable_code */ false,
       /* emit_all_via_cast_features */ false);
+  CachedModelsContext cached_models_context(context, *context.options);
   DexStore store("test_store");
   store.add_classes(scope);
   context.stores = {store};
@@ -45,10 +46,13 @@ Context test_overrides(const Scope& scope) {
   context.control_flow_graphs =
       std::make_unique<ControlFlowGraphs>(context.stores);
   context.types = std::make_unique<Types>(*context.options, context.stores);
-  context.class_hierarchies =
-      std::make_unique<ClassHierarchies>(*context.options, context.stores);
+  context.class_hierarchies = std::make_unique<ClassHierarchies>(
+      *context.options, context.stores, cached_models_context);
   context.overrides = std::make_unique<Overrides>(
-      *context.options, *context.methods, context.stores);
+      *context.options,
+      *context.methods,
+      context.stores,
+      cached_models_context);
   return context;
 }
 
@@ -96,4 +100,51 @@ TEST_F(OverridesTest, Overrides) {
       overrides.get(override_two),
       testing::UnorderedElementsAre(indirect_override));
   EXPECT_TRUE(overrides.get(indirect_override).empty());
+}
+
+TEST_F(OverridesTest, JsonSerializationDeserialization) {
+  Scope scope;
+
+  auto* dex_callee = redex::create_void_method(scope, "LCallee;", "callee");
+  auto* dex_override_one = redex::create_void_method(
+      scope,
+      "LSubclassOne;",
+      "callee",
+      /* parameter_types */ "",
+      /* return_type */ "V",
+      /* super */ dex_callee->get_class());
+  auto* dex_override_two = redex::create_void_method(
+      scope,
+      "LSubclassTwo;",
+      "callee",
+      /* parameter_types */ "",
+      /* return_type */ "V",
+      /* super */ dex_callee->get_class());
+  auto* dex_indirect_override = redex::create_void_method(
+      scope,
+      "LIndirectSubclass;",
+      "callee",
+      /* parameter_types */ "",
+      /* return_type */ "V",
+      /* super */ dex_override_two->get_class());
+
+  auto context = test_overrides(scope);
+  auto overrides_json = context.overrides->to_json();
+
+  auto overrides_map = Overrides::from_json(overrides_json, *context.methods);
+
+  auto* callee = context.methods->get(dex_callee);
+  auto* override_one = context.methods->get(dex_override_one);
+  auto* override_two = context.methods->get(dex_override_two);
+  auto* indirect_override = context.methods->get(dex_indirect_override);
+
+  EXPECT_THAT(
+      overrides_map[callee],
+      testing::UnorderedElementsAre(
+          override_one, override_two, indirect_override));
+  EXPECT_TRUE(overrides_map[override_one].empty());
+  EXPECT_THAT(
+      overrides_map[override_two],
+      testing::UnorderedElementsAre(indirect_override));
+  EXPECT_TRUE(overrides_map[indirect_override].empty());
 }

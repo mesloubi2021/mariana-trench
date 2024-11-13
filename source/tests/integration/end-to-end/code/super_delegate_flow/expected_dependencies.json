@@ -34,20 +34,26 @@
   "Landroid/webkit/WebViewClient;.<init>:()V" : 
   [
     "Lcom/facebook/marianatrench/integrationtests/FacebookWebViewClient;.<init>:()V",
+    "Lcom/facebook/marianatrench/integrationtests/InsecureWebViewClient;.<init>:()V",
     "Lcom/facebook/marianatrench/integrationtests/SecureWebViewClient;.<init>:()V"
   ],
   "Landroid/webkit/WebViewClient;.onPageFinished:(Ljava/lang/String;)V" : 
   [
     "Lcom/facebook/marianatrench/integrationtests/FacebookWebViewClient;.onPageFinished:(Ljava/lang/String;)V",
+    "Lcom/facebook/marianatrench/integrationtests/InsecureWebViewClient;.onPageFinished:(Ljava/lang/String;)V",
     "Lcom/facebook/marianatrench/integrationtests/SecureWebViewClient;.onPageFinished:(Ljava/lang/String;)V"
   ],
   "Lcom/facebook/marianatrench/integrationtests/FacebookWebViewClient;.<init>:()V" : 
   [
     "Lcom/facebook/marianatrench/integrationtests/SinkWebViewClient;.<init>:()V"
   ],
-  "Lcom/facebook/marianatrench/integrationtests/FacebookWebViewClient;.onPageFinished:(Ljava/lang/String;)V" : 
+  "Lcom/facebook/marianatrench/integrationtests/InsecureWebViewClient;.<init>:()V" : 
   [
-    "Lcom/facebook/marianatrench/integrationtests/SecureWebViewClient;.onPageFinished:(Ljava/lang/String;)V"
+    "Lcom/facebook/marianatrench/integrationtests/SourceSinkWebViewClient;.<init>:()V"
+  ],
+  "Lcom/facebook/marianatrench/integrationtests/InsecureWebViewClient;.onPageFinished:(Ljava/lang/String;)V" : 
+  [
+    "Lcom/facebook/marianatrench/integrationtests/SourceSinkWebViewClient;.onPageFinished:(Ljava/lang/String;)V"
   ],
   "Lcom/facebook/marianatrench/integrationtests/Origin;.sink:(Ljava/lang/Object;)V" : 
   [
@@ -61,9 +67,13 @@
   [
     "Lcom/facebook/marianatrench/integrationtests/SourceWebViewClient;.onPageFinished:(Ljava/lang/String;)V"
   ],
+  "Lcom/facebook/marianatrench/integrationtests/SinkWebViewClient;.<init>:()V" : 
+  [
+    "Lcom/facebook/marianatrench/integrationtests/InsecureWebViewClient;.<init>:()V"
+  ],
   "Lcom/facebook/marianatrench/integrationtests/SinkWebViewClient;.onPageFinished:(Ljava/lang/String;)V" : 
   [
-    "Lcom/facebook/marianatrench/integrationtests/SecureWebViewClient;.onPageFinished:(Ljava/lang/String;)V"
+    "Lcom/facebook/marianatrench/integrationtests/InsecureWebViewClient;.onPageFinished:(Ljava/lang/String;)V"
   ],
   "Lcom/facebook/secure/context/IntentLauncher;.<init>:()V" : 
   [
@@ -105,6 +115,7 @@
     "Lcom/facebook/auth/datastore/LoggedInUserAuthDataStore;.<init>:()V",
     "Lcom/facebook/base/activity/FragmentBaseActivityUtil;.<init>:()V",
     "Lcom/facebook/content/SecureContextHelper;.<init>:()V",
+    "Lcom/facebook/marianatrench/integrationtests/InsecureWebViewClient;.<init>:()V",
     "Lcom/facebook/marianatrench/integrationtests/Origin;.<init>:()V",
     "Lcom/facebook/marianatrench/integrationtests/Origin;.source:()Ljava/lang/Object;",
     "Lcom/facebook/marianatrench/integrationtests/SecureWebViewClient;.<init>:()V",
@@ -118,7 +129,8 @@
     "Ljava/lang/StringBuilder;.<init>:()V",
     "Ljava/lang/Thread;.<init>:(Ljava/lang/Runnable;)V",
     "Ljava/text/MessageFormat;.<init>:()V",
-    "Ljava/util/TreeMap;.<init>:()V"
+    "Ljava/util/TreeMap;.<init>:()V",
+    "Lkotlin/jvm/internal/Intrinsics;.<init>:()V"
   ],
   "Ljava/lang/Runnable;.run:()V" : 
   [

@@ -10,7 +10,6 @@
 #include <initializer_list>
 #include <ostream>
 
-#include <boost/iterator/transform_iterator.hpp>
 #include <json/json.h>
 
 #include <sparta/AbstractDomain.h>
@@ -21,7 +20,9 @@
 #include <mariana-trench/CallClassIntervalContext.h>
 #include <mariana-trench/Frame.h>
 #include <mariana-trench/IncludeMacros.h>
+#include <mariana-trench/Sanitizer.h>
 #include <mariana-trench/TaintConfig.h>
+#include <mariana-trench/TransformKind.h>
 
 namespace marianatrench {
 
@@ -32,32 +33,6 @@ class KindFrames final : public sparta::AbstractDomain<KindFrames> {
  private:
   using FramesByInterval =
       sparta::HashedAbstractPartition<CallClassIntervalContext, Frame>;
-
- private:
-  struct GetFrameReference {
-    using Reference = typename std::iterator_traits<typename std::unordered_map<
-        CallClassIntervalContext,
-        Frame>::const_iterator>::reference;
-
-    const Frame& operator()(Reference element) const {
-      return element.second;
-    }
-  };
-
-  using ConstIterator = boost::transform_iterator<
-      GetFrameReference,
-      typename std::unordered_map<CallClassIntervalContext, Frame>::
-          const_iterator>;
-
- public:
-  // C++ container concept member types
-  using iterator = ConstIterator;
-  using const_iterator = ConstIterator;
-  using value_type = Frame;
-  using difference_type = std::ptrdiff_t;
-  using size_type = std::size_t;
-  using const_reference = const Frame&;
-  using const_pointer = const Frame*;
 
  private:
   explicit KindFrames(const Kind* MT_NULLABLE kind, FramesByInterval frames)
@@ -124,6 +99,18 @@ class KindFrames final : public sparta::AbstractDomain<KindFrames> {
     }
   }
 
+  template <typename Visitor> // void(const Frame&)
+  void visit(Visitor&& visitor) const {
+    static_assert(
+        std::is_void_v<decltype(visitor(std::declval<const Frame&>()))>);
+
+    frames_.visit(
+        [visitor = std::forward<Visitor>(visitor)](
+            const std::pair<const CallClassIntervalContext, Frame>& binding) {
+          visitor(binding.second);
+        });
+  }
+
   template <typename Predicate> // bool(const Frame&)
   void filter(Predicate&& predicate) {
     static_assert(
@@ -141,15 +128,10 @@ class KindFrames final : public sparta::AbstractDomain<KindFrames> {
     }
   }
 
-  ConstIterator begin() const {
-    return boost::make_transform_iterator(
-        frames_.bindings().begin(), GetFrameReference());
-  }
-
-  ConstIterator end() const {
-    return boost::make_transform_iterator(
-        frames_.bindings().end(), GetFrameReference());
-  }
+  /**
+   * This iterates over every frame and can be expensive. Use for testing only.
+   */
+  std::size_t num_frames() const;
 
   /**
    * Appends `path_element` to the output paths of all propagation frames.
@@ -162,9 +144,8 @@ class KindFrames final : public sparta::AbstractDomain<KindFrames> {
    * Return bottom if the taint should not be propagated.
    */
   KindFrames propagate(
-      const Method* callee,
-      const AccessPath& callee_port,
-      const Position* call_position,
+      const Method* MT_NULLABLE callee,
+      const CallInfo& propagated_call_info,
       const FeatureMayAlwaysSet& locally_inferred_features,
       int maximum_source_sink_distance,
       Context& context,
@@ -173,16 +154,27 @@ class KindFrames final : public sparta::AbstractDomain<KindFrames> {
       const CallClassIntervalContext& class_interval_context,
       const ClassIntervals::Interval& caller_class_interval) const;
 
-  void filter_invalid_frames(
-      const std::function<
-          bool(const Method* MT_NULLABLE, const AccessPath&, const Kind*)>&
-          is_valid);
+  KindFrames add_sanitize_transform(
+      const Sanitizer& sanitizer,
+      const KindFactory& kind_factory,
+      const TransformsFactory& transforms_factory) const;
+
+  KindFrames apply_transform(
+      const KindFactory& kind_factory,
+      const TransformsFactory& transforms_factory,
+      const UsedKinds& used_kinds,
+      const TransformList* local_transforms,
+      transforms::TransformDirection direction) const;
+
+  void filter_invalid_frames(const std::function<bool(const Kind*)>& is_valid);
 
   bool contains_kind(const Kind*) const;
 
   KindFrames with_kind(const Kind* kind) const;
 
   void add_inferred_features(const FeatureMayAlwaysSet& features);
+
+  void collapse_class_intervals();
 
   friend std::ostream& operator<<(std::ostream& out, const KindFrames& frames);
 

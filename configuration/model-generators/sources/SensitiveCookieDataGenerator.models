@@ -11,7 +11,11 @@
       "model": {
         "sources": [
           {
-            "kind": "SensitiveCookieData",
+            "kind": "SessionData",
+            "port": "Return"
+          },
+          {
+            "kind": "FBSessionCookie",
             "port": "Return"
           }
         ]

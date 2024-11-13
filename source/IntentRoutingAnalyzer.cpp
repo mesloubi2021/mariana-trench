@@ -20,9 +20,6 @@ namespace marianatrench {
 
 namespace {
 
-static std::unordered_map<std::string, ParameterPosition> intent_class_setters =
-    constants::get_intent_class_setters();
-
 using RoutedIntents = PatriciaTreeSetAbstractDomain<
     const DexType*,
     /* bottom_is_empty */ true,
@@ -131,7 +128,7 @@ class Transfer final : public InstructionAnalyzerBase<
         return false;
       }
 
-      const auto* type = found->second;
+      const auto* type = found->second.singleton_type();
       LOG_OR_DUMP(
           context,
           4,
@@ -280,28 +277,27 @@ IntentRoutingData method_routes_intents_to(
       routed_intents.push_back(intent);
     }
   }
-  return {
+  return IntentRoutingData{
       /* receiving_intent_root */ context->method_gets_routed_intent(),
       routed_intents};
 }
 
 } // namespace
 
-IntentRoutingAnalyzer IntentRoutingAnalyzer::run(const Context& context) {
-  if (!context.options->enable_cross_component_analysis()) {
-    return IntentRoutingAnalyzer();
-  }
+std::unique_ptr<IntentRoutingAnalyzer> IntentRoutingAnalyzer::run(
+    const Methods& methods,
+    const Types& types,
+    const Options& options) {
+  auto analyzer = std::make_unique<IntentRoutingAnalyzer>();
 
-  IntentRoutingAnalyzer analyzer;
   auto queue = sparta::work_queue<const Method*>([&](const Method* method) {
-    auto intent_routing_data =
-        method_routes_intents_to(method, *context.types, *context.options);
+    auto intent_routing_data = method_routes_intents_to(method, types, options);
     if (intent_routing_data.receiving_intent_root.root != std::nullopt) {
       LOG(5,
-          "Shimming {} as a method that receivings an Intent.",
+          "Shimming {} as a method that receives an Intent.",
           method->show());
       auto klass = method->get_class();
-      analyzer.classes_to_intent_receivers_.update(
+      analyzer->classes_to_intent_receivers_.update(
           klass,
           [&intent_routing_data](
               const DexType* /* key */,
@@ -316,25 +312,24 @@ IntentRoutingAnalyzer IntentRoutingAnalyzer::run(const Context& context) {
       LOG(5,
           "Shimming {} as a method that routes intents cross-component.",
           method->show());
-      analyzer.methods_to_routed_intents_.emplace(
+      analyzer->methods_to_routed_intents_.emplace(
           method, intent_routing_data.routed_intents);
     }
   });
 
-  auto* methods = context.methods.get();
-  for (auto iterator = methods->begin(); iterator != methods->end();
-       ++iterator) {
-    queue.add_item(*iterator);
+  for (const auto* method : methods) {
+    queue.add_item(method);
   }
   queue.run_all();
 
   return analyzer;
 }
 
-std::vector<ShimTarget> IntentRoutingAnalyzer::get_intent_routing_targets(
+InstantiatedShim::FlatSet<ShimTarget>
+IntentRoutingAnalyzer::get_intent_routing_targets(
     const Method* original_callee,
     const Method* caller) const {
-  std::vector<ShimTarget> intent_routing_targets;
+  InstantiatedShim::FlatSet<ShimTarget> intent_routing_targets;
 
   // Check if callee is an intent launcher
   auto [component, position] = get_position_from_callee(original_callee);
@@ -358,7 +353,7 @@ std::vector<ShimTarget> IntentRoutingAnalyzer::get_intent_routing_targets(
           intent_receiver.root == std::nullopt) {
         continue;
       }
-      intent_routing_targets.emplace_back(
+      intent_routing_targets.emplace(
           intent_receiver.method,
           ShimParameterMapping({{*intent_receiver.root, *position}}));
     }

@@ -6,22 +6,31 @@
  */
 
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 
 #include <boost/algorithm/string/predicate.hpp>
-#include <boost/filesystem/string_file.hpp>
 #include <fmt/format.h>
 #include <json/value.h>
 
+#include <ConcurrentContainers.h>
+#include <DexAnnotation.h>
 #include <sparta/WorkQueue.h>
 
 #include <mariana-trench/Constants.h>
+#include <mariana-trench/Filesystem.h>
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/JsonValidation.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/Methods.h>
+#include <mariana-trench/ModelValidator.h>
 #include <mariana-trench/Options.h>
+#include <mariana-trench/Positions.h>
 #include <mariana-trench/Registry.h>
 #include <mariana-trench/Rules.h>
+#include <mariana-trench/RulesCoverage.h>
 #include <mariana-trench/Statistics.h>
+#include <mariana-trench/model-generator/ModelGeneratorNameFactory.h>
 
 namespace marianatrench {
 
@@ -57,24 +66,35 @@ Registry::Registry(
   for (const auto& value : JsonValidation::null_or_array(models_value)) {
     const auto* method = Method::from_json(value["method"], context);
     mt_assert(method != nullptr);
-    join_with(Model::from_json(method, value, context));
+    join_with(Model::from_config_json(method, value, context));
   }
   for (const auto& value : JsonValidation::null_or_array(field_models_value)) {
     const auto* field = Field::from_json(value["field"], context);
     mt_assert(field != nullptr);
-    join_with(FieldModel::from_json(field, value, context));
+    join_with(FieldModel::from_config_json(field, value, context));
   }
   for (const auto& value :
        JsonValidation::null_or_array(literal_models_value)) {
-    join_with(LiteralModel::from_json(value, context));
+    join_with(LiteralModel::from_config_json(value, context));
   }
 }
+
+Registry::Registry(
+    Context& context,
+    ConcurrentMap<const Method*, Model>&& models,
+    ConcurrentMap<const Field*, FieldModel>&& field_models,
+    ConcurrentMap<std::string, LiteralModel>&& literal_models)
+    : context_(context),
+      models_(std::move(models)),
+      field_models_(std::move(field_models)),
+      literal_models_(std::move(literal_models)) {}
 
 Registry Registry::load(
     Context& context,
     const Options& options,
     const std::vector<Model>& generated_models,
-    const std::vector<FieldModel>& generated_field_models) {
+    const std::vector<FieldModel>& generated_field_models,
+    const std::optional<Registry>& cached_registry) {
   // Create a registry with the generated models
   Registry registry(context, generated_models, generated_field_models);
 
@@ -85,7 +105,7 @@ Registry Registry::load(
   for (const auto& models_path : options.models_paths()) {
     registry.join_with(Registry(
         context,
-        /* models_value */ JsonValidation::parse_json_file(models_path),
+        /* models_value */ JsonReader::parse_json_file(models_path),
         /* field_models_value */ Json::Value(Json::arrayValue),
         /* literal_models_value */ Json::Value(Json::arrayValue)));
   }
@@ -94,7 +114,7 @@ Registry Registry::load(
         context,
         /* models_value */ Json::Value(Json::arrayValue),
         /* field_models_value */
-        JsonValidation::parse_json_file(field_models_path),
+        JsonReader::parse_json_file(field_models_path),
         /* literal_models_value */ Json::Value(Json::arrayValue)));
   }
   for (const auto& literal_models_path : options.literal_models_paths()) {
@@ -103,7 +123,11 @@ Registry Registry::load(
         /* models_value */ Json::Value(Json::arrayValue),
         /* field_models_value */ Json::Value(Json::arrayValue),
         /* literal_models_value */
-        JsonValidation::parse_json_file(literal_models_path)));
+        JsonReader::parse_json_file(literal_models_path)));
+  }
+
+  if (cached_registry.has_value()) {
+    registry.join_with(*cached_registry);
   }
 
   // Add a default model for methods that don't have one
@@ -122,6 +146,10 @@ void Registry::add_default_models() {
     queue.add_item(method);
   }
   queue.run_all();
+}
+
+bool Registry::has_model(const Method* method) const {
+  return models_.find(method) != models_.end();
 }
 
 Model Registry::get(const Method* method) const {
@@ -224,7 +252,7 @@ void Registry::join_with(const Registry& other) {
   }
 }
 
-void Registry::dump_metadata(const boost::filesystem::path& path) const {
+void Registry::dump_metadata(const std::filesystem::path& path) const {
   auto value = Json::Value(Json::objectValue);
 
   auto codes = Json::Value(Json::objectValue);
@@ -260,12 +288,11 @@ void Registry::dump_metadata(const boost::filesystem::path& path) const {
   value["tool"] = Json::Value("mariana_trench");
   value["version"] = Json::Value("0.2");
 
-  boost::filesystem::save_string_file(
-      path, JsonValidation::to_styled_string(value));
+  JsonWriter::write_json_file(path, value);
 }
 
 std::string Registry::dump_models() const {
-  auto writer = JsonValidation::compact_writer();
+  auto writer = JsonWriter::compact_writer();
   std::stringstream string;
   string << "// @";
   string << "generated\n";
@@ -302,18 +329,9 @@ Json::Value Registry::models_to_json() const {
   return models_value;
 }
 
-void Registry::dump_models(
-    const boost::filesystem::path& path,
+void Registry::to_sharded_models_json(
+    const std::filesystem::path& path,
     const std::size_t batch_size) const {
-  // Remove existing model files under this directory.
-  for (auto& file : boost::filesystem::directory_iterator(path)) {
-    const auto& file_path = file.path();
-    if (boost::filesystem::is_regular_file(file_path) &&
-        boost::starts_with(file_path.filename().string(), "model@")) {
-      boost::filesystem::remove(file_path);
-    }
-  }
-
   std::vector<Model> models;
   for (const auto& model : models_) {
     models.push_back(model.second);
@@ -329,56 +347,149 @@ void Registry::dump_models(
     literal_models.push_back(literal_model.second);
   }
 
-  const auto total_batch =
-      (models_.size() + field_models_.size() + literal_models_.size()) /
-          batch_size +
-      1;
-  const auto padded_total_batch = fmt::format("{:0>5}", total_batch);
+  std::size_t total_elements =
+      models.size() + field_models.size() + literal_models.size();
 
-  auto queue = sparta::work_queue<std::size_t>(
-      [&](std::size_t batch) {
-        // Construct a valid sharded file name for SAPP.
-        const auto padded_batch = fmt::format("{:0>5}", batch);
-        const auto batch_path = path /
-            ("model@" + padded_batch + "-of-" + padded_total_batch + ".json");
+  auto to_json_line = [&](std::size_t i) -> Json::Value {
+    mt_assert(i < total_elements);
+    if (i < models.size()) {
+      return models[i].to_json(context_);
+    } else if (i < models.size() + field_models.size()) {
+      return field_models[i - models.size()].to_json(context_);
+    } else {
+      return literal_models[i - models.size() - field_models.size()].to_json(
+          context_);
+    }
+  };
 
-        std::ofstream batch_stream(batch_path.native(), std::ios_base::out);
-        if (!batch_stream.is_open()) {
-          ERROR(1, "Unable to write models to `{}`.", batch_path.native());
-          return;
-        }
-        batch_stream << "// @"
-                     << "generated\n";
+  JsonWriter::write_sharded_json_files(
+      path, batch_size, total_elements, "model@", to_json_line);
+}
 
-        // Write the current batch of models to file.
-        auto writer = JsonValidation::compact_writer();
-        for (std::size_t i = batch_size * batch; i < batch_size * (batch + 1) &&
-             i < models.size() + field_models.size() + literal_models.size();
-             i++) {
-          if (i < models.size()) {
-            writer->write(models[i].to_json(context_), &batch_stream);
-          } else if (i < models.size() + field_models.size()) {
-            writer->write(
-                field_models[i - models.size()].to_json(context_),
-                &batch_stream);
-          } else {
-            writer->write(
-                literal_models[i - models.size() - field_models.size()].to_json(
-                    context_),
-                &batch_stream);
-          }
-          batch_stream << "\n";
-        }
-        batch_stream.close();
-      },
-      sparta::parallel::default_num_threads());
+Registry Registry::from_sharded_models_json(
+    Context& context,
+    const std::filesystem::path& path) {
+  LOG(1, "Reading models from sharded JSON files...");
 
-  for (std::size_t batch = 0; batch < total_batch; batch++) {
-    queue.add_item(batch);
+  ConcurrentMap<const Method*, Model> models;
+  ConcurrentMap<const Field*, FieldModel> field_models;
+  ConcurrentMap<std::string, LiteralModel> literal_models;
+
+  // A path with no redundant directory separators, current directory (dot) or
+  // parent directory (dot-dot) elements.
+  auto directory_name = std::filesystem::canonical(path.string()).filename();
+
+  auto from_json_line =
+      [&context, &directory_name, &models](const Json::Value& value) -> void {
+    JsonValidation::validate_object(value);
+    if (value.isMember("method")) {
+      try {
+        const auto* method = Method::from_json(value["method"], context);
+        mt_assert(method != nullptr);
+        auto model = Model::from_json(value, context);
+
+        // Indicate that the source of these models is
+        // `Options::sharded_models_directory()`
+        model.make_sharded_model_generators(
+            /* identifier */ directory_name.string());
+
+        model.collapse_class_intervals();
+        models.emplace(method, model);
+      } catch (const JsonValidationError& e) {
+        WARNING(1, "Unable to parse model `{}`: {}", value, e.what());
+      }
+    } else {
+      // TODO(T176362886): Support parsing field and literal models from JSON.
+      ERROR(1, "Unrecognized model type in JSON: `{}`", value.asString());
+    }
+  };
+
+  JsonReader::read_sharded_json_files(path, "model@", from_json_line);
+
+  return Registry(
+      context,
+      std::move(models),
+      std::move(field_models),
+      std::move(literal_models));
+}
+
+void Registry::dump_file_coverage_info(
+    const std::filesystem::path& output_path) const {
+  std::unordered_set<std::string> covered_paths;
+  for (const auto& [method, model] : models_) {
+    if (method->get_code() == nullptr || model.skip_analysis()) {
+      continue;
+    }
+
+    const auto* path = context_.positions->get_path(method->dex_method());
+    if (path) {
+      covered_paths.insert(*path);
+    }
   }
-  queue.run_all();
 
-  LOG(1, "Wrote models to {} shards.", total_batch);
+  std::ofstream output_file;
+  output_file.open(output_path, std::ios_base::out);
+  if (!output_file.is_open()) {
+    ERROR(
+        1, "Unable to write file coverage info to `{}`.", output_path.native());
+    return;
+  }
+
+  for (const auto& path : covered_paths) {
+    output_file << path << std::endl;
+  }
+
+  output_file.close();
+}
+
+void Registry::dump_rule_coverage_info(
+    const std::filesystem::path& output_path) const {
+  std::unordered_set<const Kind*> used_sources;
+  std::unordered_set<const Kind*> used_sinks;
+  std::unordered_set<const Transform*> used_transforms;
+
+  for (const auto& [_method, model] : models_) {
+    auto source_kinds = model.source_kinds();
+    used_sources.insert(source_kinds.begin(), source_kinds.end());
+
+    auto sink_kinds = model.sink_kinds();
+    used_sinks.insert(sink_kinds.begin(), sink_kinds.end());
+
+    auto transforms = model.local_transform_kinds();
+    used_transforms.insert(transforms.begin(), transforms.end());
+  }
+
+  for (const auto& [_field, model] : field_models_) {
+    auto source_kinds = model.sources().kinds();
+    used_sources.insert(source_kinds.begin(), source_kinds.end());
+
+    auto sink_kinds = model.sinks().kinds();
+    used_sinks.insert(sink_kinds.begin(), sink_kinds.end());
+  }
+
+  for (const auto& [_literal, model] : literal_models_) {
+    auto source_kinds = model.sources().kinds();
+    used_sources.insert(source_kinds.begin(), source_kinds.end());
+  }
+
+  auto rule_coverage = RulesCoverage::create(
+      *(context_.rules), used_sources, used_sinks, used_transforms);
+  JsonWriter::write_json_file(output_path, rule_coverage.to_json());
+}
+
+void Registry::verify_expected_output(
+    const std::filesystem::path& test_output_path) const {
+  auto results = Json::Value(Json::arrayValue);
+
+  for (const auto& [method, model] : models_) {
+    auto model_validators = ModelValidators::from_method(method);
+    if (!model_validators) {
+      continue;
+    }
+    results.append(model_validators->validate(model).to_json());
+  }
+
+  JsonWriter::write_json_file(test_output_path, results);
 }
 
 } // namespace marianatrench

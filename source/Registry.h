@@ -20,12 +20,6 @@
 #include <mariana-trench/LiteralModel.h>
 #include <mariana-trench/Model.h>
 
-namespace {
-
-constexpr std::size_t k_default_shard_limit = 10000;
-
-} // namespace
-
 namespace marianatrench {
 
 class Registry final {
@@ -46,6 +40,13 @@ class Registry final {
       const Json::Value& field_models_value,
       const Json::Value& literal_models_value);
 
+  /* Create a registry with the given models. */
+  explicit Registry(
+      Context& context,
+      ConcurrentMap<const Method*, Model>&& models,
+      ConcurrentMap<const Field*, FieldModel>&& field_models,
+      ConcurrentMap<std::string, LiteralModel>&& literal_models);
+
   MOVE_CONSTRUCTOR_ONLY(Registry);
 
   /**
@@ -58,13 +59,17 @@ class Registry final {
       Context& context,
       const Options& options,
       const std::vector<Model>& generated_models,
-      const std::vector<FieldModel>& generated_field_models);
+      const std::vector<FieldModel>& generated_field_models,
+      const std::optional<Registry>& cached_registry);
 
   void add_default_models();
 
   /* These are thread-safe. */
   Model get(const Method* method) const;
   FieldModel get(const Field* field) const;
+
+  /* This is thread-safe. */
+  bool has_model(const Method* method) const;
 
   /* This is thread-safe. */
   void set(const Model& model);
@@ -87,17 +92,29 @@ class Registry final {
   void join_with(const LiteralModel& literal_model);
   void join_with(const Registry& other);
 
-  void dump_metadata(const boost::filesystem::path& path) const;
-  void dump_models(
-      const boost::filesystem::path& path,
-      const std::size_t shard_limit = k_default_shard_limit) const;
+  void dump_metadata(const std::filesystem::path& path) const;
+
+  void to_sharded_models_json(
+      const std::filesystem::path& path,
+      const std::size_t shard_limit =
+          JsonValidation::k_default_shard_limit) const;
+  static Registry from_sharded_models_json(
+      Context& context,
+      const std::filesystem::path& input_directory);
+
+  void dump_file_coverage_info(const std::filesystem::path& path) const;
+  void dump_rule_coverage_info(const std::filesystem::path& path) const;
+
+  void verify_expected_output(
+      const std::filesystem::path& test_output_path) const;
+
   std::string dump_models() const;
   Json::Value models_to_json() const;
 
  private:
   Context& context_;
 
-  mutable ConcurrentMap<const Method*, Model> models_;
+  ConcurrentMap<const Method*, Model> models_;
   ConcurrentMap<const Field*, FieldModel> field_models_;
   ConcurrentMap<std::string, LiteralModel> literal_models_;
 };

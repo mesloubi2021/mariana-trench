@@ -15,15 +15,17 @@
 #include <mariana-trench/Context.h>
 #include <mariana-trench/Dependencies.h>
 #include <mariana-trench/EventLogger.h>
-#include <mariana-trench/JsonValidation.h>
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/ModelGeneration.h>
 #include <mariana-trench/Options.h>
 #include <mariana-trench/Timer.h>
 #include <mariana-trench/model-generator/BuilderPatternGenerator.h>
 #include <mariana-trench/model-generator/ContentProviderGenerator.h>
+#include <mariana-trench/model-generator/DFASourceGenerator.h>
 #include <mariana-trench/model-generator/JoinOverrideGenerator.h>
 #include <mariana-trench/model-generator/JsonModelGenerator.h>
+#include <mariana-trench/model-generator/ManifestSourceGenerator.h>
 #include <mariana-trench/model-generator/ModelGenerator.h>
 #include <mariana-trench/model-generator/ModelGeneratorConfiguration.h>
 #include <mariana-trench/model-generator/ModelGeneratorName.h>
@@ -37,18 +39,31 @@ namespace marianatrench {
 namespace {
 
 std::unordered_map<const ModelGeneratorName*, std::unique_ptr<ModelGenerator>>
-make_model_generators(Context& context) {
+make_model_generators(
+    const std::optional<Registry>& preloaded_models,
+    Context& context) {
   std::unordered_map<const ModelGeneratorName*, std::unique_ptr<ModelGenerator>>
-      generators = ModelGeneration::make_builtin_model_generators(context);
+      generators = ModelGeneration::make_builtin_model_generators(
+          preloaded_models, context);
   // Find JSON model generators in search path.
   for (const auto& path : context.options->model_generator_search_paths()) {
     LOG(3, "Searching for model generators in `{}`...", path);
-    for (auto& entry : boost::filesystem::recursive_directory_iterator(path)) {
-      if (entry.path().extension() != ".json" &&
-          entry.path().extension() != ".models") {
+    for (auto& entry : std::filesystem::recursive_directory_iterator(path)) {
+      if (entry.path().extension() == ".json") {
+        // TODO(T153463464): We no longer accept legacy .json files for models.
+        // Note that there could be rule definition files, lifecycle definition
+        // files, etc. that still use the .json extension. In the future, we
+        // should use the extension to differentiate between these file types.
+        WARNING(
+            1,
+            "Not parsing `{}`. .json files are deprecated. Use .models instead.",
+            entry.path());
         continue;
       }
-      bool always_validate_models = entry.path().extension() == ".models";
+
+      if (entry.path().extension() != ".models") {
+        continue;
+      }
 
       auto path_copy = entry.path();
       auto identifier = path_copy.replace_extension("").filename().string();
@@ -56,17 +71,9 @@ make_model_generators(Context& context) {
           context.model_generator_name_factory->create(identifier);
 
       try {
-        Json::Value json = JsonValidation::parse_json_file(entry.path());
+        Json::Value json = JsonReader::parse_json_file(entry.path());
 
         if (!json.isObject()) {
-          // TODO(T153463464): We always validate .models files, but still
-          // accept legacy .json files that may not parse. (it could be a rule
-          // definition file, lifecycle definition file, etc.). Ignore it
-          // silently for now. In the future, we should use the extension to
-          // differentiate between file types.
-          if (!always_validate_models) {
-            continue;
-          }
           throw ModelGeneratorError(fmt::format(
               "Unable to parse `{}` as a valid models JSON.", entry.path()));
         }
@@ -103,20 +110,25 @@ ModelGeneratorError::ModelGeneratorError(const std::string& message)
 
 #ifndef MARIANA_TRENCH_FACEBOOK_BUILD
 std::unordered_map<const ModelGeneratorName*, std::unique_ptr<ModelGenerator>>
-ModelGeneration::make_builtin_model_generators(Context& context) {
+ModelGeneration::make_builtin_model_generators(
+    const std::optional<Registry>& preloaded_models,
+    Context& context) {
   std::vector<std::unique_ptr<ModelGenerator>> builtin_generators;
   builtin_generators.push_back(
       std::make_unique<ContentProviderGenerator>(context));
   builtin_generators.push_back(
       std::make_unique<ServiceSourceGenerator>(context));
   builtin_generators.push_back(
-      std::make_unique<TaintInTaintThisGenerator>(context));
+      std::make_unique<TaintInTaintThisGenerator>(preloaded_models, context));
   builtin_generators.push_back(
-      std::make_unique<TaintInTaintOutGenerator>(context));
+      std::make_unique<TaintInTaintOutGenerator>(preloaded_models, context));
   builtin_generators.push_back(
       std::make_unique<BuilderPatternGenerator>(context));
   builtin_generators.push_back(
       std::make_unique<JoinOverrideGenerator>(context));
+  builtin_generators.push_back(
+      std::make_unique<ManifestSourceGenerator>(context));
+  builtin_generators.push_back(std::make_unique<DFASourceGenerator>(context));
 
   std::unordered_map<const ModelGeneratorName*, std::unique_ptr<ModelGenerator>>
       builtin_generator_map;
@@ -130,6 +142,7 @@ ModelGeneration::make_builtin_model_generators(Context& context) {
 
 ModelGeneratorResult ModelGeneration::run(
     Context& context,
+    const std::optional<Registry>& preloaded_models,
     const MethodMappings& method_mappings) {
   const auto& options = *context.options;
 
@@ -140,16 +153,16 @@ ModelGeneratorResult ModelGeneration::run(
         "Removing existing model generators under `{}`...",
         *generated_models_directory);
     for (auto& file :
-         boost::filesystem::directory_iterator(*generated_models_directory)) {
+         std::filesystem::directory_iterator(*generated_models_directory)) {
       const auto& file_path = file.path();
-      if (boost::filesystem::is_regular_file(file_path) &&
+      if (std::filesystem::is_regular_file(file_path) &&
           boost::ends_with(file_path.filename().string(), ".json")) {
-        boost::filesystem::remove(file_path);
+        std::filesystem::remove(file_path);
       }
     }
   }
 
-  auto generator_definitions = make_model_generators(context);
+  auto generator_definitions = make_model_generators(preloaded_models, context);
   std::vector<std::unique_ptr<ModelGenerator>> model_generators;
   const auto& configuration_entries = options.model_generators_configuration();
 
@@ -233,7 +246,7 @@ ModelGeneratorResult ModelGeneration::run(
 
       // Merge models
       auto registry = Registry(context, models, field_models);
-      JsonValidation::write_json_file(
+      JsonWriter::write_json_file(
           *generated_models_directory + "/" +
               model_generator->name()->identifier() + ".json",
           registry.models_to_json());

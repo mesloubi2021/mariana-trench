@@ -7,7 +7,6 @@
 
 #include <mutex>
 
-#include <boost/filesystem/string_file.hpp>
 #include <fmt/format.h>
 #include <gtest/gtest.h>
 
@@ -19,6 +18,7 @@
 
 #include <mariana-trench/Context.h>
 #include <mariana-trench/Fields.h>
+#include <mariana-trench/Filesystem.h>
 #include <mariana-trench/JsonValidation.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/MarianaTrench.h>
@@ -34,8 +34,8 @@ struct JsonModelGeneratorIntegrationTest
     : public test::ContextGuard,
       public testing::TestWithParam<std::string> {};
 
-boost::filesystem::path root_directory() {
-  return boost::filesystem::path(__FILE__).parent_path() / "code";
+std::filesystem::path root_directory() {
+  return std::filesystem::path(__FILE__).parent_path() / "code";
 }
 
 } // namespace
@@ -43,9 +43,9 @@ boost::filesystem::path root_directory() {
 namespace marianatrench {
 
 TEST_P(JsonModelGeneratorIntegrationTest, CompareModels) {
-  boost::filesystem::path name = GetParam();
+  std::filesystem::path name = GetParam();
   LOG(1, "Test case `{}`", name);
-  boost::filesystem::path directory = root_directory() / name;
+  std::filesystem::path directory = root_directory() / name;
 
   Context context;
 
@@ -71,15 +71,15 @@ TEST_P(JsonModelGeneratorIntegrationTest, CompareModels) {
   // Read from the expected generated models
   std::string expected_output = "";
   try {
-    boost::filesystem::load_string_file(
-        directory / "/expected_output.json", expected_output);
+    filesystem::load_string_file(
+        directory / "expected_output.json", expected_output);
     expected_output = test::normalize_json_lines(expected_output);
   } catch (std::exception& error) {
     LOG(1, "Unable to load expected models: {}", error.what());
   }
 
   // Load test Java classes
-  boost::filesystem::path dex_path = test::find_dex_path(directory);
+  std::filesystem::path dex_path = test::find_dex_path(directory);
   LOG(3, "Dex path is `{}`", dex_path);
 
   // Properly initialize context
@@ -90,29 +90,34 @@ TEST_P(JsonModelGeneratorIntegrationTest, CompareModels) {
       DexLocation::make_location("dex", dex_path.c_str())));
   context.stores.push_back(root_store);
   const auto& options = *context.options;
+  CachedModelsContext cached_models_context(context, options);
   context.artificial_methods = std::make_unique<ArtificialMethods>(
       *context.kind_factory, context.stores);
   context.methods = std::make_unique<Methods>(context.stores);
   MethodMappings method_mappings{*context.methods};
-  auto intent_routing_analyzer = IntentRoutingAnalyzer::run(context);
   context.fields = std::make_unique<Fields>(context.stores);
   context.positions = std::make_unique<Positions>(options, context.stores);
   context.control_flow_graphs =
       std::make_unique<ControlFlowGraphs>(context.stores);
   context.types = std::make_unique<Types>(*context.options, context.stores);
-  context.class_hierarchies =
-      std::make_unique<ClassHierarchies>(*context.options, context.stores);
+  context.class_hierarchies = std::make_unique<ClassHierarchies>(
+      *context.options, context.stores, cached_models_context);
   context.overrides = std::make_unique<Overrides>(
-      *context.options, *context.methods, context.stores);
-  context.call_graph = std::make_unique<CallGraph>(
       *context.options,
       *context.methods,
-      *context.fields,
+      context.stores,
+      cached_models_context);
+  context.call_graph = std::make_unique<CallGraph>(
+      *context.options,
       *context.types,
       *context.class_hierarchies,
-      *context.overrides,
+      LifecycleMethods{},
+      Shims{/* global_shims_size */ 0},
       *context.feature_factory,
-      Shims{/* global_shims_size */ 0, intent_routing_analyzer},
+      *context.heuristics,
+      *context.methods,
+      *context.fields,
+      *context.overrides,
       method_mappings);
 
   // Run a model generator and compare output
@@ -126,8 +131,8 @@ TEST_P(JsonModelGeneratorIntegrationTest, CompareModels) {
       test::normalize_json_lines(registry.dump_models());
 
   if (expected_output != actual_output) {
-    boost::filesystem::save_string_file(
-        directory / "/expected_output.json.actual", actual_output);
+    filesystem::save_string_file(
+        directory / "expected_output.json.actual", actual_output);
   }
   EXPECT_TRUE(actual_output == expected_output);
 }

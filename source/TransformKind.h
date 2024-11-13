@@ -10,10 +10,10 @@
 #include <mariana-trench/Context.h>
 #include <mariana-trench/IncludeMacros.h>
 #include <mariana-trench/Kind.h>
-#include <mariana-trench/TransformList.h>
-#include <mariana-trench/TransformsFactory.h>
 
 namespace marianatrench {
+
+class TransformList;
 
 /**
  * Used to represent the transformations applied to the base_kind.
@@ -22,7 +22,8 @@ namespace marianatrench {
  *   - For ParameterSources: NamedKind
  *   - For Sinks: NamedKind, PartialKind, TriggeredPartialKind
  *   - For Propagations: PropagationKind
- * `global_transforms` and `local_transforms` store ordered list of `NamedKind`
+ * `global_transforms` and `local_transforms` store ordered list of `Transform`,
+ * `SanitizeTransform`, or `SourceAsTransform`
  */
 class TransformKind final : public Kind {
  public:
@@ -39,6 +40,8 @@ class TransformKind final : public Kind {
   bool operator==(const TransformKind& other) const;
 
   void show(std::ostream&) const override;
+
+  Json::Value to_json() const override;
 
   static const TransformKind* from_json(
       const Json::Value& value,
@@ -59,6 +62,10 @@ class TransformKind final : public Kind {
   }
 
   const Kind* discard_transforms() const override;
+
+  bool has_source_as_transform() const;
+
+  bool has_non_sanitize_transform() const;
 
  private:
   const Kind* base_kind_;

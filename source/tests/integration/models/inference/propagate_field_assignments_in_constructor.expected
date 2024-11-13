@@ -24,10 +24,14 @@
           "output" :
           [
             {
+              "call_info" :
+              {
+                "call_kind" : "Propagation",
+                "port" : "Argument(0)"
+              },
               "kinds" :
               [
                 {
-                  "call_info" : "Propagation",
                   "kind" : "LocalArgument(0)",
                   "output_paths" :
                   {

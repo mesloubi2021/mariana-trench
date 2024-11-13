@@ -104,9 +104,6 @@
         }
       ],
       "model": {
-        "freeze": [
-          "propagation"
-        ],
         "propagation": [
           {
             "input": "Argument(0)",
@@ -149,6 +146,120 @@
                 ]
               }
             ]
+          }
+        ]
+      }
+    },
+    {
+      "find": "methods",
+      "where": [
+        {
+          "constraint": "signature_match",
+          "parent": "Lcom/facebook/marianatrench/integrationtests/TaintTransforms;",
+          "name": "transformT3"
+        }
+      ],
+      "model": {
+        "freeze": [
+          "propagation"
+        ],
+        "propagation": [
+          {
+            "input": "Argument(0)",
+            "output": "Return",
+            "transforms": [
+              "T3"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "find": "methods",
+      "where": [
+        {
+          "constraint": "signature_pattern",
+          "pattern": "Lcom/facebook/marianatrench/integrationtests/SanitizeTransforms;.sanitizeAAllArgsRet.*"
+        }
+      ],
+      "model": {
+        "for_all_parameters": [
+          {
+            "variable": "x",
+            "where": [],
+            "sanitizers": [
+              {
+                "sanitize": "propagations",
+                "port": "Argument(x)",
+                "kinds": [
+                  {
+                    "kind": "Source[A]"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "find": "methods",
+      "where": [
+        {
+          "constraint": "signature_match",
+          "parent": "Lcom/facebook/marianatrench/integrationtests/SanitizeTransformsPropagationToSameMemoryLocation$Builder;",
+          "name": "<init>"
+        }
+      ],
+      "model": {
+        "sources": [
+          {
+            "kind": "Builder",
+            "port": "Argument(0)"
+          }
+        ]
+      }
+    },
+    {
+      "find": "methods",
+      "where": [
+        {
+          "constraint": "signature_match",
+          "parent": "Lcom/facebook/marianatrench/integrationtests/SanitizeTransformsPropagationToSameMemoryLocation$Builder;",
+          "name": "build"
+        }
+      ],
+      "model": {
+        "sinks": [
+          {
+            "kind": "Build",
+            "port": "Argument(0)"
+          }
+        ]
+      }
+    },
+    {
+      "find": "methods",
+      "where": [
+        {
+          "constraint": "signature_match",
+          "parent": "Lcom/facebook/marianatrench/integrationtests/SanitizeTransformsPropagationToSameMemoryLocation$Builder;",
+          "name": "aliasThisOnInvoke"
+        }
+      ],
+      "model": {
+        "modes": [
+          "alias-memory-location-on-invoke"
+        ],
+        "sanitizers": [
+          {
+            "sanitize": "propagations",
+            "kinds": [
+              {
+                "kind": "Sink[Build]"
+              }
+            ],
+            "port": "Argument(0)"
           }
         ]
       }

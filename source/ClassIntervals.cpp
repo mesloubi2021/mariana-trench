@@ -9,8 +9,10 @@
 #include <TypeUtil.h>
 
 #include <json/value.h>
+
 #include <mariana-trench/Assert.h>
 #include <mariana-trench/ClassIntervals.h>
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/JsonValidation.h>
 #include <mariana-trench/Log.h>
 
@@ -22,7 +24,7 @@ namespace {
 void dfs_on_hierarchy(
     const ClassHierarchy& class_hierarchy,
     const DexType* current_node,
-    std::uint32_t& dfs_order,
+    std::int32_t& dfs_order,
     std::unordered_map<const DexType*, ClassIntervals::Interval>& result) {
   auto lower_bound = dfs_order;
 
@@ -65,13 +67,13 @@ ClassIntervals::ClassIntervals(
   // dfs_order does not intersect between different trees.
   const auto* root = type::java_lang_Object();
 
-  std::uint32_t dfs_order = MIN_INTERVAL;
+  std::int32_t dfs_order = MIN_INTERVAL;
   dfs_on_hierarchy(class_hierarchy, root, dfs_order, class_intervals_);
 
   if (options.dump_class_intervals()) {
     auto class_intervals_path = options.class_intervals_output_path();
     LOG(1, "Writing class intervals to `{}`", class_intervals_path.native());
-    JsonValidation::write_json_file(class_intervals_path, to_json());
+    JsonWriter::write_json_file(class_intervals_path, to_json());
 
     // Dumping class intervals is test-only, perform additional, otherwise
     // unnecessary/expensive validation here.
@@ -106,16 +108,39 @@ Json::Value ClassIntervals::interval_to_json(const Interval& interval) {
     return interval_json;
   }
 
-  // Use the int64 constructor. This allows comparison against a Json::Value
-  // object returned from parsing a JSON string. Otherwise, we could end up
-  // comparing a Json::UInt type against a Json::Int type and fail equality
-  // check even for the same integer value.
-  interval_json.append(
-      Json::Value(static_cast<int64_t>(interval.lower_bound())));
-  interval_json.append(
-      Json::Value(static_cast<int64_t>(interval.upper_bound())));
+  // When this is read back in `interval_from_json()`, it should have Json::Int
+  // type. Note that comparing a Json::UInt type against a Json::Int type will
+  // fail equality checks even for the same integer value.
+  interval_json.append(Json::Value(interval.lower_bound()));
+  interval_json.append(Json::Value(interval.upper_bound()));
 
   return interval_json;
+}
+
+ClassIntervals::Interval ClassIntervals::interval_from_json(
+    const Json::Value& value) {
+  auto bounds = JsonValidation::null_or_array(value);
+  if (bounds.empty()) {
+    return Interval::bottom();
+  }
+
+  if (bounds.size() != 2) {
+    throw JsonValidationError(
+        value, /* field */ std::nullopt, "array of size 2 for class interval");
+  }
+
+  auto lower_bound = JsonValidation::integer(bounds[0]);
+  auto upper_bound = JsonValidation::integer(bounds[1]);
+
+  if (lower_bound == Interval::MIN && upper_bound == Interval::MAX) {
+    return Interval::top();
+  } else if (lower_bound == Interval::MIN) {
+    return Interval::bounded_above(upper_bound);
+  } else if (upper_bound == Interval::MAX) {
+    return Interval::bounded_below(lower_bound);
+  }
+
+  return Interval::finite(lower_bound, upper_bound);
 }
 
 Json::Value ClassIntervals::to_json() const {

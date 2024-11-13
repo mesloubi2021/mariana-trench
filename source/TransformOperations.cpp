@@ -6,6 +6,7 @@
  */
 
 #include <mariana-trench/Assert.h>
+#include <mariana-trench/FeatureFactory.h>
 #include <mariana-trench/KindFactory.h>
 #include <mariana-trench/TransformOperations.h>
 #include <mariana-trench/TransformsFactory.h>
@@ -15,9 +16,11 @@ namespace transforms {
 
 TaintTree apply_propagation(
     MethodContext* context,
-    const Frame& propagation,
-    TaintTree input_taint_tree) {
-  const auto* kind = propagation.kind();
+    const CallInfo& propagation_call_info,
+    const Frame& propagation_frame,
+    TaintTree input_taint_tree,
+    TransformDirection direction) {
+  const auto* kind = propagation_frame.kind();
   mt_assert(kind != nullptr);
 
   if (kind->is<PropagationKind>()) {
@@ -26,7 +29,6 @@ TaintTree apply_propagation(
 
   const auto* transform_kind = kind->as<TransformKind>();
   mt_assert(transform_kind != nullptr);
-  mt_assert(propagation.call_kind().is_propagation_with_trace());
   // For propagations with traces, we can have local and global transforms the
   // same as with source/sink traces. Regardless, both local and global
   // transforms in the propagation are local to the call-site where it's
@@ -34,6 +36,20 @@ TaintTree apply_propagation(
   const auto* all_transforms = context->transforms_factory.concat(
       transform_kind->local_transforms(), transform_kind->global_transforms());
   mt_assert(all_transforms != nullptr);
+
+  mt_assert(
+      propagation_call_info.call_kind().is_propagation_with_trace() ||
+      propagation_call_info.call_kind().is_propagation() &&
+          std::any_of(
+              all_transforms->begin(),
+              all_transforms->end(),
+              [](const Transform* transform) {
+                return transform->is<SanitizerSetTransform>();
+              }));
+
+  if (direction == TransformDirection::Forward) {
+    all_transforms = context->transforms_factory.reverse(all_transforms);
+  }
 
   const auto* propagation_kind =
       transform_kind->base_kind()->as<PropagationKind>();
@@ -47,15 +63,48 @@ TaintTree apply_propagation(
             context->kind_factory,
             context->transforms_factory,
             context->used_kinds,
-            all_transforms),
+            all_transforms,
+            direction),
         UpdateKind::Weak);
   }
 
   // For propagation with traces, we need to update the output taint tree with
   // the trace information from the propagation frame.
-  output_taint_tree.update_with_propagation_trace(propagation);
+  output_taint_tree.update_with_propagation_trace(
+      propagation_call_info, propagation_frame);
 
   return output_taint_tree;
+}
+
+Taint apply_source_as_transform_to_sink(
+    MethodContext* context,
+    const Taint& source_taint,
+    const TransformList* source_as_transform,
+    const Taint& sink_taint,
+    std::string_view callee,
+    const Position* position) {
+  // Direction of applying on sink should be the same as backward transform
+  auto transformed_sink_taint = sink_taint.apply_transform(
+      context->kind_factory,
+      context->transforms_factory,
+      context->used_kinds,
+      source_as_transform,
+      TransformDirection::Backward);
+
+  // Add additional features
+  FeatureMayAlwaysSet additional_features{
+      context->feature_factory.get_exploitability_root()};
+  // Features found in the source branch should be a part of the final issue.
+  additional_features.add(source_taint.features_joined());
+  transformed_sink_taint.add_locally_inferred_features(additional_features);
+
+  // Add extra trace and exploitability origin to source frame
+  transformed_sink_taint.update_with_extra_trace_and_exploitability_origin(
+      source_taint, FrameType::source(), context->method(), callee, position);
+
+  LOG(5, "Materialized source-as-transform sink: {}", transformed_sink_taint);
+
+  return transformed_sink_taint;
 }
 
 } // namespace transforms

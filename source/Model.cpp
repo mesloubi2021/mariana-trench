@@ -5,11 +5,13 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <boost/range/adaptor/filtered.hpp>
 #include <fmt/format.h>
 
 #include <Show.h>
 #include <TypeUtil.h>
 
+#include <mariana-trench/AccessPathFactory.h>
 #include <mariana-trench/Assert.h>
 #include <mariana-trench/ClassHierarchies.h>
 #include <mariana-trench/ClassProperties.h>
@@ -17,6 +19,7 @@
 #include <mariana-trench/Constants.h>
 #include <mariana-trench/EventLogger.h>
 #include <mariana-trench/FeatureFactory.h>
+#include <mariana-trench/FeatureSet.h>
 #include <mariana-trench/FieldCache.h>
 #include <mariana-trench/Heuristics.h>
 #include <mariana-trench/JsonValidation.h>
@@ -24,6 +27,8 @@
 #include <mariana-trench/Model.h>
 #include <mariana-trench/Overrides.h>
 #include <mariana-trench/Positions.h>
+#include <mariana-trench/model-generator/ModelGeneratorNameFactory.h>
+#include <mariana-trench/model-generator/TaintConfigTemplate.h>
 
 namespace marianatrench {
 
@@ -67,8 +72,6 @@ void join_with_frozen(
 
 std::string model_mode_to_string(Model::Mode mode) {
   switch (mode) {
-    case Model::Mode::Normal:
-      return "normal";
     case Model::Mode::SkipAnalysis:
       return "skip-analysis";
     case Model::Mode::AddViaObscureFeature:
@@ -83,16 +86,20 @@ std::string model_mode_to_string(Model::Mode mode) {
       return "no-collapse-on-propagation";
     case Model::Mode::AliasMemoryLocationOnInvoke:
       return "alias-memory-location-on-invoke";
+    case Model::Mode::AliasMemoryLocationOnPropagation:
+      return "alias-memory-location-on-propagation";
     case Model::Mode::StrongWriteOnPropagation:
       return "strong-write-on-propagation";
+    case Model::Mode::NoCollapseOnApproximate:
+      return "no-collapse-on-approximate";
+    case Model::Mode::_Count:
+      mt_unreachable();
   }
   mt_unreachable();
 }
 
 std::optional<Model::Mode> string_to_model_mode(const std::string& mode) {
-  if (mode == "normal") {
-    return Model::Mode::Normal;
-  } else if (mode == "skip-analysis") {
+  if (mode == "skip-analysis") {
     return Model::Mode::SkipAnalysis;
   } else if (mode == "add-via-obscure-feature") {
     return Model::Mode::AddViaObscureFeature;
@@ -106,8 +113,12 @@ std::optional<Model::Mode> string_to_model_mode(const std::string& mode) {
     return Model::Mode::NoCollapseOnPropagation;
   } else if (mode == "alias-memory-location-on-invoke") {
     return Model::Mode::AliasMemoryLocationOnInvoke;
+  } else if (mode == "alias-memory-location-on-propagation") {
+    return Model::Mode::AliasMemoryLocationOnPropagation;
   } else if (mode == "strong-write-on-propagation") {
     return Model::Mode::StrongWriteOnPropagation;
+  } else if (mode == "no-collapse-on-approximate") {
+    return Model::Mode::NoCollapseOnApproximate;
   } else {
     return std::nullopt;
   }
@@ -115,8 +126,6 @@ std::optional<Model::Mode> string_to_model_mode(const std::string& mode) {
 
 std::string model_freeze_kind_to_string(Model::FreezeKind freeze_kind) {
   switch (freeze_kind) {
-    case Model::FreezeKind::None:
-      return "none";
     case Model::FreezeKind::Generations:
       return "generations";
     case Model::FreezeKind::ParameterSources:
@@ -125,15 +134,15 @@ std::string model_freeze_kind_to_string(Model::FreezeKind freeze_kind) {
       return "sinks";
     case Model::FreezeKind::Propagations:
       return "propagation";
+    case Model::FreezeKind::_Count:
+      mt_unreachable();
   }
   mt_unreachable();
 }
 
 std::optional<Model::FreezeKind> string_to_freeze_kind(
     const std::string& freeze_kind) {
-  if (freeze_kind == "none") {
-    return Model::FreezeKind::None;
-  } else if (freeze_kind == "generations") {
+  if (freeze_kind == "generations") {
     return Model::FreezeKind::Generations;
   } else if (freeze_kind == "parameter_sources") {
     return Model::FreezeKind::ParameterSources;
@@ -146,13 +155,17 @@ std::optional<Model::FreezeKind> string_to_freeze_kind(
   }
 }
 
-Model::Model() : method_(nullptr) {}
+Model::Model()
+    : method_(nullptr),
+      inline_as_getter_(AccessPathConstantDomain::bottom()),
+      inline_as_setter_(SetterAccessPathConstantDomain::bottom()) {}
 
 Model::Model(
     const Method* method,
     Context& context,
     Modes modes,
     Frozen frozen,
+    TaintTreeConfigurationOverrides global_config_overrides,
     const std::vector<std::pair<AccessPath, TaintConfig>>& generations,
     const std::vector<std::pair<AccessPath, TaintConfig>>& parameter_sources,
     const std::vector<std::pair<AccessPath, TaintConfig>>& sinks,
@@ -167,7 +180,10 @@ Model::Model(
     const SetterAccessPathConstantDomain& inline_as_setter,
     const ModelGeneratorNameSet& model_generators,
     const IssueSet& issues)
-    : method_(method), modes_(modes), frozen_(frozen) {
+    : method_(method),
+      modes_(modes),
+      frozen_(frozen),
+      global_config_overrides_(std::move(global_config_overrides)) {
   if (method_) {
     // Use a set of heuristics to infer the modes of this method.
 
@@ -186,19 +202,19 @@ Model::Model(
   }
 
   for (const auto& [port, source] : generations) {
-    add_generation(port, source);
+    add_generation(port, source, *context.heuristics);
   }
 
   for (const auto& [port, source] : parameter_sources) {
-    add_parameter_source(port, source);
+    add_parameter_source(port, source, *context.heuristics);
   }
 
   for (const auto& [port, sink] : sinks) {
-    add_sink(port, sink);
+    add_sink(port, sink, *context.heuristics);
   }
 
   for (const auto& propagation : propagations) {
-    add_propagation(propagation);
+    add_propagation(propagation, *context.heuristics);
   }
 
   for (const auto& sanitizer : global_sanitizers) {
@@ -235,10 +251,13 @@ Model::Model(
   for (const auto& issue : issues) {
     add_issue(issue);
   }
+
+  apply_config_overrides(global_config_overrides_);
 }
 
 bool Model::operator==(const Model& other) const {
   return modes_ == other.modes_ && frozen_ == other.frozen_ &&
+      global_config_overrides_ == other.global_config_overrides_ &&
       generations_ == other.generations_ &&
       parameter_sources_ == other.parameter_sources_ &&
       call_effect_sources_ == other.call_effect_sources_ &&
@@ -250,6 +269,8 @@ bool Model::operator==(const Model& other) const {
       attach_to_sinks_ == other.attach_to_sinks_ &&
       attach_to_propagations_ == other.attach_to_propagations_ &&
       add_features_to_arguments_ == other.add_features_to_arguments_ &&
+      add_via_value_of_features_to_arguments_ ==
+      other.add_via_value_of_features_to_arguments_ &&
       inline_as_getter_ == other.inline_as_getter_ &&
       inline_as_setter_ == other.inline_as_setter_ &&
       model_generators_ == other.model_generators_ && issues_ == other.issues_;
@@ -260,31 +281,32 @@ bool Model::operator!=(const Model& other) const {
 }
 
 Model Model::instantiate(const Method* method, Context& context) const {
-  Model model(method, context, modes_, frozen_);
+  Model model(method, context, modes_, frozen_, global_config_overrides_);
 
   for (const auto& [port, generation_taint] : generations_.elements()) {
-    model.add_generation(port, generation_taint);
+    model.add_generation(port, generation_taint, *context.heuristics);
   }
 
   for (const auto& [port, parameter_source_taint] :
        parameter_sources_.elements()) {
-    model.add_parameter_source(port, parameter_source_taint);
+    model.add_parameter_source(
+        port, parameter_source_taint, *context.heuristics);
   }
 
   for (const auto& [port, sink_taint] : sinks_.elements()) {
-    model.add_sink(port, sink_taint);
+    model.add_sink(port, sink_taint, *context.heuristics);
   }
 
   for (const auto& [port, source_taint] : call_effect_sources_.elements()) {
-    model.add_call_effect_source(port, source_taint);
+    model.add_call_effect_source(port, source_taint, *context.heuristics);
   }
 
   for (const auto& [port, sink_taint] : call_effect_sinks_.elements()) {
-    model.add_call_effect_sink(port, sink_taint);
+    model.add_call_effect_sink(port, sink_taint, *context.heuristics);
   }
 
   for (const auto& [input_path, output] : propagations_.elements()) {
-    model.add_propagation(input_path, output);
+    model.add_propagation(input_path, output, *context.heuristics);
   }
 
   for (const auto& sanitizer : global_sanitizers_) {
@@ -311,6 +333,11 @@ Model Model::instantiate(const Method* method, Context& context) const {
     model.add_add_features_to_arguments(root, features);
   }
 
+  for (const auto& [root, via_value_of_ports] :
+       add_via_value_of_features_to_arguments_) {
+    model.add_add_via_value_of_features_to_arguments(root, via_value_of_ports);
+  }
+
   model.set_inline_as_getter(inline_as_getter_);
   model.set_inline_as_setter(inline_as_setter_);
 
@@ -335,97 +362,150 @@ Model Model::at_callsite(
   Model model;
   model.modes_ = modes_;
   model.frozen_ = frozen_;
+  model.global_config_overrides_ = global_config_overrides_;
 
   auto maximum_source_sink_distance =
       context.options->maximum_source_sink_distance();
 
-  // Add special features that cannot be done in model generators.
+  // To add special features that cannot be done in model generators.
   mt_assert(context.feature_factory != nullptr);
-  auto extra_features = context.class_properties->propagate_features(
-      caller, callee, *context.feature_factory);
+
+  model.add_features_to_arguments_ = add_features_to_arguments_;
+  // Materialize via_value_of_ports into features and add them to
+  // add_features_to_arguments
+  for (const auto& [root, via_value_of_ports] :
+       add_via_value_of_features_to_arguments_) {
+    FeatureSet root_features{};
+    for (const auto& tagged_root : via_value_of_ports.elements()) {
+      if (!tagged_root.root().is_argument() ||
+          tagged_root.root().parameter_position() >=
+              source_constant_arguments.size()) {
+        ERROR(
+            1,
+            "Invalid port {} provided for add_via_value_of_features_to_arguments_ ports of method {}",
+            tagged_root,
+            callee->show());
+        continue;
+      }
+      root_features.add(context.feature_factory->get_via_value_of_feature(
+          source_constant_arguments[tagged_root.root().parameter_position()],
+          tagged_root.tag()));
+    }
+    model.add_add_features_to_arguments(root, std::move(root_features));
+  }
+
+  auto narrowed_class_interval_context = class_interval_context;
+  if (class_interval_context.preserves_type_context()) {
+    // When it is a "this.*" call, `callee`'s class is within the class
+    // hierarchy of `caller`'s class (could be child or parent). The class
+    // interval should be the more precise/derived interval.
+    auto narrowed_interval = class_interval_context.callee_interval().meet(
+        context.class_intervals->get_interval(callee->get_class()));
+    // Intervals should intersect for this.* calls.
+    mt_assert_log(
+        !narrowed_interval.is_bottom(),
+        "Caller and callee intervals do not intersect. Caller: %s %s, Callee: %s %s",
+        show(caller).c_str(),
+        show(class_interval_context.callee_interval()).c_str(),
+        show(callee).c_str(),
+        show(context.class_intervals->get_interval(callee->get_class()))
+            .c_str());
+
+    narrowed_class_interval_context = CallClassIntervalContext(
+        narrowed_interval, class_interval_context.preserves_type_context());
+  }
 
   auto caller_class_interval =
       context.class_intervals->get_interval(caller->get_class());
 
+  generations_.visit_roots([&model](Root root, const TaintTree& taint_tree) {
+    model.generations_.apply_config_overrides(
+        root, taint_tree.config_overrides());
+  });
   generations_.visit(
       [&model,
        callee,
        call_position,
        maximum_source_sink_distance,
-       &extra_features,
        &context,
        &source_register_types,
        &source_constant_arguments,
-       &class_interval_context,
+       &narrowed_class_interval_context,
        &caller_class_interval](
           const AccessPath& callee_port, const Taint& generations) {
         model.generations_.write(
             callee_port,
             generations.propagate(
                 callee,
-                callee_port,
+                context.access_path_factory->get(callee_port),
                 call_position,
                 maximum_source_sink_distance,
-                extra_features,
                 context,
                 source_register_types,
                 source_constant_arguments,
-                class_interval_context,
-                caller_class_interval),
+                narrowed_class_interval_context,
+                caller_class_interval,
+                model.add_features_to_arguments_),
             UpdateKind::Weak);
       });
 
+  sinks_.visit_roots([&model](Root root, const TaintTree& taint_tree) {
+    model.sinks_.apply_config_overrides(root, taint_tree.config_overrides());
+  });
   sinks_.visit([&model,
                 callee,
                 call_position,
                 maximum_source_sink_distance,
-                &extra_features,
                 &context,
                 &source_register_types,
                 &source_constant_arguments,
-                &class_interval_context,
+                &narrowed_class_interval_context,
                 &caller_class_interval](
                    const AccessPath& callee_port, const Taint& sinks) {
     model.sinks_.write(
         callee_port,
         sinks.propagate(
             callee,
-            callee_port,
+            context.access_path_factory->get(callee_port),
             call_position,
             maximum_source_sink_distance,
-            extra_features,
             context,
             source_register_types,
             source_constant_arguments,
-            class_interval_context,
-            caller_class_interval),
+            narrowed_class_interval_context,
+            caller_class_interval,
+            model.add_features_to_arguments_),
         UpdateKind::Weak);
   });
 
+  std::size_t max_call_chain_source_sink_distance =
+      context.heuristics->max_call_chain_source_sink_distance();
   call_effect_sinks_.visit(
       [&model,
        callee,
        call_position,
        &context,
-       &class_interval_context,
-       &caller_class_interval](
+       &narrowed_class_interval_context,
+       &caller_class_interval,
+       max_call_chain_source_sink_distance](
           const AccessPath& callee_port, const Taint& call_effect) {
         switch (callee_port.root().kind()) {
           case Root::Kind::CallEffectCallChain:
+          case Root::Kind::CallEffectExploitability:
           case Root::Kind::CallEffectIntent: {
             model.call_effect_sinks_.write(
                 callee_port,
                 call_effect.propagate(
                     callee,
-                    callee_port,
+                    context.access_path_factory->get(callee_port),
                     call_position,
-                    Heuristics::kMaxCallChainSourceSinkDistance,
-                    /* extra features */ {},
+                    max_call_chain_source_sink_distance,
                     context,
                     /* source register types */ {},
                     /* source constant arguments */ {},
-                    class_interval_context,
-                    caller_class_interval),
+                    narrowed_class_interval_context,
+                    caller_class_interval,
+                    model.add_features_to_arguments_),
                 UpdateKind::Weak);
           } break;
           default:
@@ -433,35 +513,36 @@ Model Model::at_callsite(
         }
       });
 
+  propagations_.visit_roots([&model](Root root, const TaintTree& taint_tree) {
+    model.propagations_.apply_config_overrides(
+        root, taint_tree.config_overrides());
+  });
   propagations_.visit(
       [&model,
        callee,
        call_position,
        maximum_source_sink_distance,
-       &extra_features,
        &context,
        &source_register_types,
        &source_constant_arguments,
-       &class_interval_context,
+       &narrowed_class_interval_context,
        &caller_class_interval](
           const AccessPath& callee_port, const Taint& propagations) {
         model.propagations_.write(
             callee_port,
             propagations.propagate(
                 callee,
-                callee_port,
+                context.access_path_factory->get(callee_port),
                 call_position,
                 maximum_source_sink_distance,
-                extra_features,
                 context,
                 source_register_types,
                 source_constant_arguments,
-                class_interval_context,
-                caller_class_interval),
+                narrowed_class_interval_context,
+                caller_class_interval,
+                model.add_features_to_arguments_),
             UpdateKind::Weak);
       });
-
-  model.add_features_to_arguments_ = add_features_to_arguments_;
 
   model.inline_as_getter_ = inline_as_getter_;
   model.inline_as_setter_ = inline_as_setter_;
@@ -475,6 +556,8 @@ Model Model::at_callsite(
     model.inline_as_setter_.set_to_top();
   }
 
+  model.apply_config_overrides(global_config_overrides_);
+
   return model;
 }
 
@@ -482,6 +565,7 @@ Model Model::initial_model_for_iteration() const {
   Model model;
   model.method_ = method_;
   model.modes_ = modes_;
+  model.global_config_overrides_ = global_config_overrides_;
   model.global_sanitizers_ = global_sanitizers_;
   model.port_sanitizers_ = port_sanitizers_;
   model.model_generators_ = model_generators_;
@@ -500,25 +584,36 @@ void Model::collapse_invalid_paths(Context& context) {
                       Path::Element path_element) {
     FieldTypesAccumulator current_field_types;
 
-    if (path_element.is_field()) {
-      for (const auto* previous_field_type : previous_field_types) {
-        if (previous_field_type == type::java_lang_Object()) {
-          // Object is too generic to determine the set of possible field names.
-          continue;
-        }
+    if (!path_element.is_field() || previous_field_types.empty()) {
+      // For non-field types (e.g. array access), always assume it is valid.
+      //
+      // If previous_field_types is empty, type information of parent path is
+      // unknown. The parent could either be a non-field access path, or a
+      // field whose type information is unavailable. Assume this is valid to
+      // avoid over-collapsing.
+      return std::make_pair(true, current_field_types);
+    }
 
-        const auto& cached_types = context.field_cache->field_types(
-            previous_field_type, path_element.name());
-        current_field_types.insert(cached_types.begin(), cached_types.end());
+    for (const auto* previous_field_type : previous_field_types) {
+      if (previous_field_type == type::java_lang_Object() ||
+          !context.field_cache->has_class_info(previous_field_type)) {
+        // If any of the previous field types are too generic (Object) or lack
+        // details about fields in the class (e.g. external class not loaded
+        // in system jar), assume valid to avoid over-collapsing.
+        return std::make_pair(true, FieldTypesAccumulator{});
       }
 
-      if (current_field_types.empty()) {
-        LOG(5,
-            "Model for method `{}` has invalid path element `{}`",
-            show(method_),
-            show(path_element));
-        return std::make_pair(false, current_field_types);
-      }
+      const auto& cached_types = context.field_cache->field_types(
+          previous_field_type, path_element.name());
+      current_field_types.insert(cached_types.begin(), cached_types.end());
+    }
+
+    if (current_field_types.empty()) {
+      LOG(5,
+          "Model for method `{}` has invalid path element `{}`",
+          show(method_),
+          show(path_element));
+      return std::make_pair(false, current_field_types);
     }
 
     return std::make_pair(true, current_field_types);
@@ -563,43 +658,65 @@ void Model::collapse_invalid_paths(Context& context) {
       is_valid, initial_accumulator, features);
 }
 
-void Model::approximate(const FeatureMayAlwaysSet& widening_features) {
+void Model::approximate(
+    const FeatureMayAlwaysSet& widening_features,
+    const Heuristics& heuristics) {
   const auto make_mold = [](Taint taint) { return taint.essential(); };
 
+  // Shape the taint trees with mold
   generations_.shape_with(make_mold, widening_features);
-  generations_.limit_leaves(
-      Heuristics::kGenerationMaxOutputPathLeaves, widening_features);
-
   parameter_sources_.shape_with(make_mold, widening_features);
-  parameter_sources_.limit_leaves(
-      Heuristics::kParameterSourceMaxOutputPathLeaves, widening_features);
-
   sinks_.shape_with(make_mold, widening_features);
-  sinks_.limit_leaves(Heuristics::kSinkMaxInputPathLeaves, widening_features);
-
   call_effect_sources_.shape_with(make_mold, widening_features);
-  call_effect_sources_.limit_leaves(
-      Heuristics::kCallEffectSourceMaxOutputPathLeaves, widening_features);
-
   call_effect_sinks_.shape_with(make_mold, widening_features);
-  call_effect_sinks_.limit_leaves(
-      Heuristics::kCallEffectSinkMaxInputPathLeaves, widening_features);
-
   propagations_.shape_with(make_mold, widening_features);
+
+  if (no_collapse_on_approximate()) {
+    return;
+  }
+
+  // Limit the number of leaves in each taint tree when
+  // Mode::NoCollapseOnApproximate is not set
+  generations_.limit_leaves(
+      heuristics.generation_max_output_path_leaves(),
+      global_config_overrides_,
+      widening_features);
+
+  parameter_sources_.limit_leaves(
+      heuristics.parameter_source_max_output_path_leaves(),
+      global_config_overrides_,
+      widening_features);
+
+  sinks_.limit_leaves(
+      heuristics.sink_max_input_path_leaves(),
+      global_config_overrides_,
+      widening_features);
+
   propagations_.limit_leaves(
-      Heuristics::kPropagationMaxInputPathLeaves, widening_features);
+      heuristics.propagation_max_input_path_leaves(),
+      global_config_overrides_,
+      widening_features);
+
+  call_effect_sources_.limit_leaves(
+      heuristics.call_effect_source_max_output_path_leaves(),
+      widening_features);
+
+  call_effect_sinks_.limit_leaves(
+      heuristics.call_effect_sink_max_input_path_leaves(), widening_features);
 }
 
 bool Model::empty() const {
-  return modes_.empty() && frozen_.empty() && generations_.is_bottom() &&
+  return modes_.empty() && frozen_.empty() &&
+      global_config_overrides_.is_bottom() && generations_.is_bottom() &&
       parameter_sources_.is_bottom() && sinks_.is_bottom() &&
       call_effect_sources_.is_bottom() && call_effect_sinks_.is_bottom() &&
       propagations_.is_bottom() && global_sanitizers_.is_bottom() &&
       port_sanitizers_.is_bottom() && attach_to_sources_.is_bottom() &&
       attach_to_sinks_.is_bottom() && attach_to_propagations_.is_bottom() &&
-      add_features_to_arguments_.is_bottom() && inline_as_getter_.is_bottom() &&
-      inline_as_setter_.is_bottom() && model_generators_.is_bottom() &&
-      issues_.is_bottom();
+      add_features_to_arguments_.is_bottom() &&
+      add_via_value_of_features_to_arguments_.is_bottom() &&
+      inline_as_getter_.is_bottom() && inline_as_setter_.is_bottom() &&
+      model_generators_.is_bottom() && issues_.is_bottom();
 }
 
 void Model::add_mode(Model::Mode mode, Context& context) {
@@ -617,6 +734,32 @@ void Model::add_mode(Model::Mode mode, Context& context) {
   }
 }
 
+namespace {
+
+void add_taint_in_taint_out_propagation(
+    Model& model,
+    Context& context,
+    const FeatureSet& user_features,
+    ParameterPosition number_of_parameters) {
+  for (ParameterPosition parameter_position = 0;
+       parameter_position < number_of_parameters;
+       parameter_position++) {
+    model.add_propagation(
+        PropagationConfig(
+            /* input_path */ AccessPath(
+                Root(Root::Kind::Argument, parameter_position)),
+            /* kind */ context.kind_factory->local_return(),
+            /* output_paths */
+            PathTreeDomain{{Path{}, CollapseDepth::zero()}},
+            /* inferred_features */ FeatureMayAlwaysSet::bottom(),
+            /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
+            user_features),
+        *context.heuristics);
+  }
+}
+
+} // namespace
+
 void Model::add_taint_in_taint_out(Context& context) {
   modes_ |= Model::Mode::TaintInTaintOut;
 
@@ -631,19 +774,56 @@ void Model::add_taint_in_taint_out(Context& context) {
         context.feature_factory->get("via-obscure-taint-in-taint-out"));
   }
 
-  for (ParameterPosition parameter_position = 0;
-       parameter_position < method_->number_of_parameters();
-       parameter_position++) {
-    add_propagation(PropagationConfig(
-        /* input_path */ AccessPath(
-            Root(Root::Kind::Argument, parameter_position)),
-        /* kind */ context.kind_factory->local_return(),
-        /* output_paths */
-        PathTreeDomain{{Path{}, CollapseDepth::zero()}},
-        /* inferred_features */ FeatureMayAlwaysSet::bottom(),
-        /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
-        user_features));
+  add_taint_in_taint_out_propagation(
+      *this, context, user_features, method_->number_of_parameters());
+}
+
+void Model::add_taint_in_taint_out(
+    Context& context,
+    const IRInstruction* instruction) {
+  modes_ |= Model::Mode::TaintInTaintOut;
+
+  // Not intended to be used for methods that have a concrete DexMethod*.
+  mt_assert(method_ == nullptr);
+  const auto* dex_method_reference = instruction->get_method();
+  if (dex_method_reference->is_def()) {
+    // If this happens, it means methods were created after call graph
+    // construction. They would not have been defined in the APK, so it should
+    // not impact analysis results, but this is non-ideal behavior. Methods
+    // should be created by the time call-graph construction takes place.
+    WARNING(
+        3,
+        "Model::add_taint_in_taint_out called with def DexMethodReference: `{}`. Current model: `{}`",
+        show(dex_method_reference),
+        *this);
+    method_ = context.methods->get(dex_method_reference->as_def());
+    mt_assert_log(method_ != nullptr, "Expected method to have been created.");
+    add_taint_in_taint_out(context);
+    return;
   }
+
+  if (dex_method_reference->get_proto()->get_rtype() == type::_void()) {
+    return;
+  }
+
+  auto user_features =
+      FeatureSet{context.feature_factory->get_missing_method()};
+  if (modes_.test(Model::Mode::AddViaObscureFeature)) {
+    user_features.add(context.feature_factory->get("via-obscure"));
+  }
+
+  auto number_of_parameters =
+      dex_method_reference->get_proto()->get_args()->size();
+  if (!opcode::is_invoke_static(instruction->opcode())) {
+    ++number_of_parameters; // add 1 for "this" argument
+  }
+  // The number of registers given to the invoke instruction is the number of
+  // parameters. If assertion fails, the computation for number of parameters
+  // above is wrong which means we might be seeing invoke static on non-static
+  // methods or vice versa.
+  mt_assert(number_of_parameters == instruction->srcs_size());
+  add_taint_in_taint_out_propagation(
+      *this, context, user_features, number_of_parameters);
 }
 
 void Model::add_taint_in_taint_this(Context& context) {
@@ -661,131 +841,184 @@ void Model::add_taint_in_taint_this(Context& context) {
   for (ParameterPosition parameter_position = 1;
        parameter_position < method_->number_of_parameters();
        parameter_position++) {
-    add_propagation(PropagationConfig(
-        /* input_path */ AccessPath(
-            Root(Root::Kind::Argument, parameter_position)),
-        /* kind */ context.kind_factory->local_receiver(),
-        /* output_paths */
-        PathTreeDomain{{Path{}, CollapseDepth::zero()}},
-        /* inferred_features */ FeatureMayAlwaysSet::bottom(),
-        /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
-        user_features));
+    add_propagation(
+        PropagationConfig(
+            /* input_path */ AccessPath(
+                Root(Root::Kind::Argument, parameter_position)),
+            /* kind */ context.kind_factory->local_receiver(),
+            /* output_paths */
+            PathTreeDomain{{Path{}, CollapseDepth::zero()}},
+            /* inferred_features */ FeatureMayAlwaysSet::bottom(),
+            /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
+            user_features),
+        *context.heuristics);
   }
 }
 
-void Model::add_generation(const AccessPath& port, TaintConfig source) {
+void Model::add_generation(
+    const AccessPath& port,
+    TaintConfig source,
+    const Heuristics& heuristics) {
   if (!check_taint_config_consistency(source, "source")) {
     return;
   }
-  add_generation(port, Taint{std::move(source)});
+  add_generation(port, Taint{std::move(source)}, heuristics);
 }
 
 void Model::add_inferred_generations(
     AccessPath port,
     Taint generations,
-    const FeatureMayAlwaysSet& widening_features) {
+    const TaintTreeConfigurationOverrides& config_overrides,
+    const FeatureMayAlwaysSet& widening_features,
+    const Heuristics& heuristics) {
   auto sanitized_generations = apply_source_sink_sanitizers(
       SanitizerKind::Sources, std::move(generations), port.root());
   if (!sanitized_generations.is_bottom()) {
+    generations_.apply_config_overrides(config_overrides);
     update_taint_tree(
         generations_,
         std::move(port),
-        Heuristics::kGenerationMaxPortSize,
+        heuristics.generation_max_port_size(),
         std::move(sanitized_generations),
         widening_features);
   }
 }
 
-void Model::add_parameter_source(const AccessPath& port, TaintConfig source) {
+void Model::add_parameter_source(
+    const AccessPath& port,
+    TaintConfig source,
+    const Heuristics& heuristics) {
   if (!check_taint_config_consistency(source, "source")) {
     return;
   }
 
-  add_parameter_source(port, Taint{std::move(source)});
+  add_parameter_source(port, Taint{std::move(source)}, heuristics);
 }
 
-void Model::add_sink(const AccessPath& port, TaintConfig sink) {
+void Model::add_sink(
+    const AccessPath& port,
+    TaintConfig sink,
+    const Heuristics& heuristics) {
   if (!check_taint_config_consistency(sink, "sink")) {
     return;
   }
 
-  add_sink(port, Taint{std::move(sink)});
+  add_sink(port, Taint{std::move(sink)}, heuristics);
 }
 
 void Model::add_inferred_sinks(
     AccessPath port,
     Taint sinks,
-    const FeatureMayAlwaysSet& widening_features) {
+    const TaintTreeConfigurationOverrides& config_overrides,
+    const FeatureMayAlwaysSet& widening_features,
+    const Heuristics& heuristics) {
   auto sanitized_sinks = apply_source_sink_sanitizers(
       SanitizerKind::Sinks, std::move(sinks), port.root());
   if (!sanitized_sinks.is_bottom()) {
+    // Apply config overrides
+    sinks_.apply_config_overrides(port.root(), config_overrides);
+
     update_taint_tree(
         sinks_,
         std::move(port),
-        Heuristics::kSinkMaxPortSize,
+        heuristics.call_effect_sink_max_port_size(),
         std::move(sanitized_sinks),
         widening_features);
   }
 }
 
-void Model::add_call_effect_source(AccessPath port, TaintConfig source) {
+void Model::add_call_effect_source(
+    AccessPath port,
+    TaintConfig source,
+    const Heuristics& heuristics) {
   if (!check_taint_config_consistency(source, "effect source")) {
     return;
   }
 
-  add_call_effect_source(port, Taint{std::move(source)});
+  add_call_effect_source(port, Taint{std::move(source)}, heuristics);
 }
 
-void Model::add_call_effect_sink(AccessPath port, TaintConfig sink) {
+void Model::add_call_effect_sink(
+    AccessPath port,
+    TaintConfig sink,
+    const Heuristics& heuristics) {
   if (!check_taint_config_consistency(sink, "effect sink")) {
     return;
   }
 
-  add_call_effect_sink(port, Taint{std::move(sink)});
-}
-
-void Model::add_inferred_call_effect_sinks(AccessPath port, Taint sinks) {
-  add_call_effect_sink(port, sinks);
+  add_call_effect_sink(port, Taint{std::move(sink)}, heuristics);
 }
 
 void Model::add_inferred_call_effect_sinks(
     AccessPath port,
     Taint sinks,
-    const FeatureMayAlwaysSet& widening_features) {
+    const Heuristics& heuristics) {
+  add_call_effect_sink(port, sinks, heuristics);
+}
+
+void Model::add_inferred_call_effect_sinks(
+    AccessPath port,
+    Taint sinks,
+    const FeatureMayAlwaysSet& widening_features,
+    const Heuristics& heuristics) {
   auto sanitized_sinks = apply_source_sink_sanitizers(
       SanitizerKind::Sinks, std::move(sinks), port.root());
   if (!sanitized_sinks.is_bottom()) {
     update_taint_tree(
         call_effect_sinks_,
         std::move(port),
-        Heuristics::kCallEffectSinkMaxPortSize,
+        heuristics.call_effect_sink_max_port_size(),
         std::move(sanitized_sinks),
         widening_features);
   }
 }
 
-void Model::add_propagation(PropagationConfig propagation) {
+void Model::add_propagation(
+    PropagationConfig propagation,
+    const Heuristics& heuristics) {
   if (!check_port_consistency(propagation.input_path()) ||
       !check_root_consistency(propagation.propagation_kind()->root())) {
     return;
   }
 
-  add_propagation(propagation.input_path(), Taint::propagation(propagation));
+  add_propagation(
+      propagation.input_path(), Taint::propagation(propagation), heuristics);
 }
 
 void Model::add_inferred_propagations(
     AccessPath input_path,
     Taint local_taint,
-    const FeatureMayAlwaysSet& widening_features) {
-  if (has_global_propagation_sanitizer() ||
-      !port_sanitizers_.get(input_path.root()).is_bottom()) {
+    const TaintTreeConfigurationOverrides& config_overrides,
+    const FeatureMayAlwaysSet& widening_features,
+    const Heuristics& heuristics,
+    const KindFactory& kind_factory,
+    const TransformsFactory& transforms_factory) {
+  if (has_global_propagation_sanitizer()) {
     return;
   }
+
+  for (const auto& sanitizer : port_sanitizers_.get(input_path.root())) {
+    // Port sanitizer added without specifying any kinds. Sanitize all kinds on
+    // this port.
+    if (sanitizer.kinds().is_top()) {
+      return;
+    }
+
+    // Apply the kind-specific sanitizer
+    if (sanitizer.sanitizer_kind() == SanitizerKind::Propagations &&
+        !sanitizer.kinds().is_bottom()) {
+      local_taint = local_taint.add_sanitize_transform(
+          sanitizer, kind_factory, transforms_factory);
+    }
+  }
+
+  // Apply config overrides
+  propagations_.apply_config_overrides(input_path.root(), config_overrides);
 
   update_taint_tree(
       propagations_,
       std::move(input_path),
-      Heuristics::kPropagationMaxInputPathSize,
+      heuristics.propagation_max_input_path_size(),
       std::move(local_taint),
       widening_features);
 }
@@ -819,8 +1052,10 @@ Taint Model::apply_source_sink_sanitizers(
         if (kinds.is_top()) {
           return Taint::bottom();
         }
-        sanitized_kinds.insert(
-            kinds.elements().begin(), kinds.elements().end());
+
+        for (const auto element : kinds.elements()) {
+          sanitized_kinds.insert(element.kind());
+        }
       }
     }
   }
@@ -887,6 +1122,19 @@ void Model::add_add_features_to_arguments(Root root, FeatureSet features) {
       root, [&features](const FeatureSet& set) { return set.join(features); });
 }
 
+void Model::add_add_via_value_of_features_to_arguments(
+    Root root,
+    TaggedRootSet via_value_of_ports) {
+  if (!check_root_consistency(root)) {
+    return;
+  }
+
+  add_via_value_of_features_to_arguments_.update(
+      root, [&via_value_of_ports](const TaggedRootSet& set) {
+        return set.join(via_value_of_ports);
+      });
+}
+
 bool Model::has_add_features_to_arguments() const {
   return !add_features_to_arguments_.is_bottom();
 }
@@ -918,6 +1166,53 @@ void Model::add_model_generator_if_empty(
   }
 
   model_generators_.add(model_generator);
+}
+
+void Model::make_sharded_model_generators(const std::string& identifier) {
+  ModelGeneratorNameSet new_model_generator_names;
+  for (const auto* model_generator : model_generators_) {
+    new_model_generator_names.add(
+        ModelGeneratorNameFactory::singleton().create_sharded(
+            identifier, model_generator));
+  }
+
+  if (new_model_generator_names.empty()) {
+    // If there are no existing model generators, add an empty "sharded" one
+    // to indicate that the entire model came from a "sharded" source.
+    new_model_generator_names.add(
+        ModelGeneratorNameFactory::singleton().create_sharded(
+            identifier,
+            /* original_generator */ nullptr));
+  }
+
+  model_generators_ = std::move(new_model_generator_names);
+}
+
+void Model::collapse_class_intervals() {
+  generations_.transform([](Taint taint) {
+    taint.collapse_class_intervals();
+    return taint;
+  });
+  parameter_sources_.transform([](Taint taint) {
+    taint.collapse_class_intervals();
+    return taint;
+  });
+  sinks_.transform([](Taint taint) {
+    taint.collapse_class_intervals();
+    return taint;
+  });
+  call_effect_sources_.transform([](Taint taint) {
+    taint.collapse_class_intervals();
+    return taint;
+  });
+  call_effect_sinks_.transform([](Taint taint) {
+    taint.collapse_class_intervals();
+    return taint;
+  });
+  propagations_.transform([](Taint taint) {
+    taint.collapse_class_intervals();
+    return taint;
+  });
 }
 
 const SetterAccessPathConstantDomain& Model::inline_as_setter() const {
@@ -965,17 +1260,30 @@ bool Model::alias_memory_location_on_invoke() const {
   return modes_.test(Model::Mode::AliasMemoryLocationOnInvoke);
 }
 
+bool Model::alias_memory_location_on_propagation() const {
+  return modes_.test(Model::Mode::AliasMemoryLocationOnPropagation);
+}
+
 bool Model::strong_write_on_propagation() const {
   return modes_.test(Model::Mode::StrongWriteOnPropagation);
+}
+
+bool Model::no_collapse_on_approximate() const {
+  return modes_.test(Model::Mode::NoCollapseOnApproximate);
 }
 
 bool Model::is_frozen(Model::FreezeKind freeze_kind) const {
   return frozen_.test(freeze_kind);
 }
 
+void Model::freeze(Model::FreezeKind freeze_kind) {
+  frozen_.set(freeze_kind);
+}
+
 bool Model::leq(const Model& other) const {
   return modes_.is_subset_of(other.modes_) &&
       frozen_.is_subset_of(other.frozen_) &&
+      global_config_overrides_.leq(other.global_config_overrides_) &&
       leq_frozen(
              generations_,
              other.generations_,
@@ -1004,6 +1312,8 @@ bool Model::leq(const Model& other) const {
       attach_to_sinks_.leq(other.attach_to_sinks_) &&
       attach_to_propagations_.leq(other.attach_to_propagations_) &&
       add_features_to_arguments_.leq(other.add_features_to_arguments_) &&
+      add_via_value_of_features_to_arguments_.leq(
+          other.add_via_value_of_features_to_arguments_) &&
       inline_as_getter_.leq(other.inline_as_getter_) &&
       inline_as_setter_.leq(other.inline_as_setter_) &&
       model_generators_.leq(other.model_generators_) &&
@@ -1040,6 +1350,7 @@ void Model::join_with(const Model& other) {
 
   modes_ |= other.modes_;
   frozen_ |= other.frozen_;
+  global_config_overrides_.join_with(other.global_config_overrides_);
   call_effect_sources_.join_with(other.call_effect_sources_);
   call_effect_sinks_.join_with(other.call_effect_sinks_);
   global_sanitizers_.join_with(other.global_sanitizers_);
@@ -1048,6 +1359,8 @@ void Model::join_with(const Model& other) {
   attach_to_sinks_.join_with(other.attach_to_sinks_);
   attach_to_propagations_.join_with(other.attach_to_propagations_);
   add_features_to_arguments_.join_with(other.add_features_to_arguments_);
+  add_via_value_of_features_to_arguments_.join_with(
+      other.add_via_value_of_features_to_arguments_);
   inline_as_getter_.join_with(other.inline_as_getter_);
   inline_as_setter_.join_with(other.inline_as_setter_);
   model_generators_.join_with(other.model_generators_);
@@ -1056,7 +1369,63 @@ void Model::join_with(const Model& other) {
   mt_expensive_assert(previous.leq(*this) && other.leq(*this));
 }
 
-Model Model::from_json(
+namespace {
+
+void kinds_from_taint_tree(
+    const TaintAccessPathTree& taint_tree,
+    std::unordered_set<const Kind*>& result) {
+  for (const auto& [_port, taint] : taint_tree.elements()) {
+    auto taint_kinds = taint.kinds();
+    result.insert(taint_kinds.begin(), taint_kinds.end());
+  }
+}
+
+} // namespace
+
+std::unordered_set<const Kind*> Model::source_kinds() const {
+  std::unordered_set<const Kind*> result;
+
+  kinds_from_taint_tree(parameter_sources_, result);
+  kinds_from_taint_tree(generations_, result);
+  kinds_from_taint_tree(call_effect_sources_, result);
+
+  return result;
+}
+
+std::unordered_set<const Kind*> Model::sink_kinds() const {
+  std::unordered_set<const Kind*> result;
+
+  kinds_from_taint_tree(sinks_, result);
+  kinds_from_taint_tree(call_effect_sinks_, result);
+
+  return result;
+}
+
+std::unordered_set<const Transform*> Model::local_transform_kinds() const {
+  std::unordered_set<const Transform*> result;
+
+  std::unordered_set<const Kind*> propagation_kinds;
+  kinds_from_taint_tree(propagations_, propagation_kinds);
+  for (const Kind* propagation_kind : propagation_kinds) {
+    const auto* transform_kind = propagation_kind->as<TransformKind>();
+    if (transform_kind == nullptr) {
+      continue;
+    }
+
+    const auto* transforms = transform_kind->local_transforms();
+    if (transforms == nullptr) {
+      continue;
+    }
+
+    for (const auto* transform : *transforms) {
+      result.insert(transform);
+    }
+  }
+
+  return result;
+}
+
+Model Model::from_config_json(
     const Method* method,
     const Json::Value& value,
     Context& context,
@@ -1066,8 +1435,11 @@ Model Model::from_json(
     JsonValidation::check_unexpected_members(
         value,
         {"method", // Only when called from `Registry`.
+         "model_generators", // Only when parsing previously emitted models.
+         "position", // Only when parsing previously emitted models.
          "modes",
          "freeze",
+         "global_config_overrides",
          "generations",
          "parameter_sources",
          "sources",
@@ -1106,57 +1478,41 @@ Model Model::from_json(
     frozen.set(*freeze_kind, true);
   }
 
-  Model model(method, context, modes, frozen);
+  TaintTreeConfigurationOverrides global_config_overrides;
+  if (value.isMember("global_config_overrides")) {
+    global_config_overrides = TaintTreeConfigurationOverrides::from_json(
+        value["global_config_overrides"]);
+  }
 
-  for (auto generation_value :
-       JsonValidation::null_or_array(value, /* field */ "generations")) {
-    auto port = AccessPath(Root(Root::Kind::Return));
-    if (generation_value.isMember("port")) {
-      JsonValidation::string(generation_value, /* field */ "port");
-      port = AccessPath::from_json(generation_value["port"]);
-    } else if (generation_value.isMember("caller_port")) {
-      JsonValidation::string(generation_value, /* field */ "caller_port");
-      port = AccessPath::from_json(generation_value["caller_port"]);
-    }
+  Model model(method, context, modes, frozen, global_config_overrides);
+
+  std::vector<std::pair<AccessPath, Json::Value>> generation_values;
+  std::vector<std::pair<AccessPath, Json::Value>> parameter_source_values;
+  std::vector<std::pair<AccessPath, Json::Value>> sink_values;
+  read_taint_configs_from_json(
+      value,
+      generation_values,
+      parameter_source_values,
+      sink_values,
+      TaintConfigTemplate::is_concrete);
+
+  for (const auto& [port, generation_value] : generation_values) {
     model.add_generation(
-        port, TaintConfig::from_json(generation_value, context));
+        port,
+        TaintConfig::from_json(generation_value, context),
+        *context.heuristics);
   }
 
-  for (auto parameter_source_value :
-       JsonValidation::null_or_array(value, /* field */ "parameter_sources")) {
-    std::string port_field =
-        parameter_source_value.isMember("port") ? "port" : "caller_port";
-    JsonValidation::string(parameter_source_value, /* field */ port_field);
-    auto port = AccessPath::from_json(parameter_source_value[port_field]);
+  for (const auto& [port, parameter_source_value] : parameter_source_values) {
     model.add_parameter_source(
-        port, TaintConfig::from_json(parameter_source_value, context));
+        port,
+        TaintConfig::from_json(parameter_source_value, context),
+        *context.heuristics);
   }
 
-  for (auto source_value :
-       JsonValidation::null_or_array(value, /* field */ "sources")) {
-    auto port = AccessPath(Root(Root::Kind::Return));
-    if (source_value.isMember("port")) {
-      JsonValidation::string(source_value, /* field */ "port");
-      port = AccessPath::from_json(source_value["port"]);
-    } else if (source_value.isMember("caller_port")) {
-      JsonValidation::string(source_value, /* field */ "caller_port");
-      port = AccessPath::from_json(source_value["caller_port"]);
-    }
-    auto source = TaintConfig::from_json(source_value, context);
-    if (port.root().is_argument()) {
-      model.add_parameter_source(port, source);
-    } else {
-      model.add_generation(port, source);
-    }
-  }
-
-  for (auto sink_value :
-       JsonValidation::null_or_array(value, /* field */ "sinks")) {
-    std::string port_field =
-        sink_value.isMember("port") ? "port" : "caller_port";
-    JsonValidation::string(sink_value, /* field */ port_field);
-    auto port = AccessPath::from_json(sink_value[port_field]);
-    model.add_sink(port, TaintConfig::from_json(sink_value, context));
+  for (const auto& [port, sink_value] : sink_values) {
+    model.add_sink(
+        port, TaintConfig::from_json(sink_value, context), *context.heuristics);
   }
 
   for (auto effect_source_value :
@@ -1166,7 +1522,9 @@ Model Model::from_json(
     JsonValidation::string(effect_source_value, /* field */ effect_type_port);
     auto port = AccessPath::from_json(effect_source_value[effect_type_port]);
     model.add_call_effect_source(
-        port, TaintConfig::from_json(effect_source_value, context));
+        port,
+        TaintConfig::from_json(effect_source_value, context),
+        *context.heuristics);
   }
 
   for (auto effect_sink_value :
@@ -1176,13 +1534,16 @@ Model Model::from_json(
     JsonValidation::string(effect_sink_value, /* field */ effect_type_port);
     auto port = AccessPath::from_json(effect_sink_value[effect_type_port]);
     model.add_call_effect_sink(
-        port, TaintConfig::from_json(effect_sink_value, context));
+        port,
+        TaintConfig::from_json(effect_sink_value, context),
+        *context.heuristics);
   }
 
   for (auto propagation_value :
        JsonValidation::null_or_array(value, /* field */ "propagation")) {
     model.add_propagation(
-        PropagationConfig::from_json(propagation_value, context));
+        PropagationConfig::from_json(propagation_value, context),
+        *context.heuristics);
   }
 
   for (auto sanitizer_value :
@@ -1238,14 +1599,26 @@ Model Model::from_json(
   for (auto add_features_to_arguments_value : JsonValidation::null_or_array(
            value, /* field */ "add_features_to_arguments")) {
     JsonValidation::check_unexpected_members(
-        add_features_to_arguments_value, {"port", "features"});
+        add_features_to_arguments_value, {"port", "features", "via_value_of"});
     JsonValidation::string(add_features_to_arguments_value, /* field */ "port");
     auto root = Root::from_json(add_features_to_arguments_value["port"]);
-    JsonValidation::null_or_array(
-        add_features_to_arguments_value, /* field */ "features");
-    auto features = FeatureSet::from_json(
-        add_features_to_arguments_value["features"], context);
-    model.add_add_features_to_arguments(root, features);
+    if (add_features_to_arguments_value.isMember("features")) {
+      auto features = FeatureSet::from_json(
+          JsonValidation::nonempty_array(
+              add_features_to_arguments_value, /* field */ "features"),
+          context);
+      model.add_add_features_to_arguments(root, features);
+    }
+
+    if (add_features_to_arguments_value.isMember("via_value_of")) {
+      TaggedRootSet via_value_of_ports;
+      for (const auto& tagged_root : JsonValidation::nonempty_array(
+               add_features_to_arguments_value, "via_value_of")) {
+        via_value_of_ports.add(TaggedRoot::from_json(tagged_root));
+      }
+      model.add_add_via_value_of_features_to_arguments(
+          root, std::move(via_value_of_ports));
+    }
   }
 
   if (value.isMember("inline_as_getter")) {
@@ -1265,6 +1638,273 @@ Model Model::from_json(
     throw JsonValidationError(
         value, /* field */ std::nullopt, /* expected */ "model without issues");
   }
+
+  model.apply_config_overrides(global_config_overrides);
+
+  return model;
+}
+
+/**
+ * Helper to read a category of taint config values from a given JSON \p value.
+ * This is effectively an extract of the common logic shared by all steps of
+ * \p Model::read_taint_configs_from_json in order to simplify it.
+ *
+ * @param output Output container to which to append the extracted taint config
+ * values.
+ * @param value JSON config to parse.
+ * @param field Field in \p value to parse.
+ * @param taint_config_filter Only taint configs in \p field matching this
+ * filter will be processed.
+ * @param root_filter Only taint configs relating to roots matching this filter
+ * will be processed.
+ * @param allow_default_port if \p true, we assume \p Root::Kind::Return as
+ * default port if none is configured.
+ */
+static void read_taint_configs(
+    std::vector<std::pair<AccessPath, Json::Value>>& output,
+    const Json::Value& value,
+    const std::string& field,
+    bool (*taint_config_filter)(const Json::Value& value),
+    bool (*root_filter)(const Root&),
+    const bool allow_default_port = false) {
+  for (auto config_value : JsonValidation::null_or_array(value, field) |
+           boost::adaptors::filtered(taint_config_filter)) {
+    auto port = AccessPath(Root(Root::Kind::Return));
+    if (config_value.isMember("port")) {
+      port = AccessPath::from_json(config_value["port"]);
+    } else if (config_value.isMember("caller_port") || !allow_default_port) {
+      port = AccessPath::from_json(config_value["caller_port"]);
+    }
+
+    if (root_filter(port.root())) {
+      output.emplace_back(std::move(port), std::move(config_value));
+    }
+  }
+}
+
+/** Filter matching every \p Root. */
+static bool all_roots(const Root&) {
+  return true;
+}
+
+/** Filter matching only argument roots. */
+static bool argument_roots_only(const Root& root) {
+  return root.is_argument();
+}
+
+/** Filter matching only non-argument roots. */
+static bool no_argument_roots(const Root& root) {
+  return !root.is_argument();
+}
+
+void Model::read_taint_configs_from_json(
+    const Json::Value& value,
+    std::vector<std::pair<AccessPath, Json::Value>>& generation_values,
+    std::vector<std::pair<AccessPath, Json::Value>>& parameter_source_values,
+    std::vector<std::pair<AccessPath, Json::Value>>& sink_values,
+    bool (*predicate)(const Json::Value& value)) {
+  read_taint_configs(
+      generation_values, value, "generations", predicate, all_roots, true);
+  read_taint_configs(
+      parameter_source_values,
+      value,
+      "parameter_sources",
+      predicate,
+      all_roots,
+      false);
+  read_taint_configs(
+      parameter_source_values,
+      value,
+      "sources",
+      predicate,
+      argument_roots_only,
+      true);
+  read_taint_configs(
+      generation_values, value, "sources", predicate, no_argument_roots, true);
+  read_taint_configs(sink_values, value, "sinks", predicate, all_roots, false);
+}
+
+Model Model::from_json(const Json::Value& value, Context& context) {
+  JsonValidation::validate_object(value);
+
+  const Method* MT_NULLABLE method = nullptr;
+  if (value.isMember("method")) {
+    method = Method::from_json(value["method"], context);
+  }
+
+  Modes modes;
+  for (const auto& mode_value :
+       JsonValidation::null_or_array(value, /* field */ "modes")) {
+    auto mode = string_to_model_mode(JsonValidation::string(mode_value));
+    if (!mode) {
+      throw JsonValidationError(value, /* field */ "modes", "valid mode");
+    }
+    modes.set(*mode, true);
+  }
+
+  Frozen frozen;
+  for (const auto& freeze :
+       JsonValidation::null_or_array(value, /* field */ "freeze")) {
+    auto freeze_kind = string_to_freeze_kind(JsonValidation::string(freeze));
+    if (!freeze_kind) {
+      throw JsonValidationError(
+          value, /* field */ "freeze", "valid freeze kind");
+    }
+    frozen.set(*freeze_kind, true);
+  }
+
+  TaintTreeConfigurationOverrides global_config_overrides{};
+  if (value.isMember("global_config_overrides")) {
+    global_config_overrides = TaintTreeConfigurationOverrides::from_json(
+        value["global_config_overrides"]);
+  }
+
+  Model model(method, context, modes, frozen, global_config_overrides);
+
+  for (const auto& generation_value :
+       JsonValidation::null_or_array(value, /* field */ "generations")) {
+    auto port = AccessPath::from_json(generation_value["port"]);
+    auto taint = Taint::from_json(generation_value["taint"], context);
+    model.add_generation(port, taint, *context.heuristics);
+    if (generation_value.isMember("config_overrides")) {
+      model.generations_.apply_config_overrides(
+          TaintTreeConfigurationOverrides::from_json(
+              generation_value["config_overrides"]));
+    }
+  }
+
+  for (const auto& parameter_source_value :
+       JsonValidation::null_or_array(value, /* field */ "parameter_sources")) {
+    auto port = AccessPath::from_json(parameter_source_value["port"]);
+    auto taint = Taint::from_json(parameter_source_value["taint"], context);
+    model.add_parameter_source(port, taint, *context.heuristics);
+    if (parameter_source_value.isMember("config_overrides")) {
+      model.parameter_sources_.apply_config_overrides(
+          TaintTreeConfigurationOverrides::from_json(
+              parameter_source_value["config_overrides"]));
+    }
+  }
+
+  for (const auto& call_effect_source_value :
+       JsonValidation::null_or_array(value, /* field */ "effect_sources")) {
+    auto port = AccessPath::from_json(call_effect_source_value["port"]);
+    auto taint = Taint::from_json(call_effect_source_value["taint"], context);
+    model.add_call_effect_source(port, taint, *context.heuristics);
+  }
+
+  for (const auto& sink_value :
+       JsonValidation::null_or_array(value, /* field */ "sinks")) {
+    auto port = AccessPath::from_json(sink_value["port"]);
+    auto taint = Taint::from_json(sink_value["taint"], context);
+    model.add_sink(port, taint, *context.heuristics);
+    if (sink_value.isMember("config_overrides")) {
+      model.sinks_.apply_config_overrides(
+          TaintTreeConfigurationOverrides::from_json(
+              sink_value["config_overrides"]));
+    }
+  }
+
+  for (const auto& call_effect_sink_value :
+       JsonValidation::null_or_array(value, /* field */ "effect_sinks")) {
+    auto port = AccessPath::from_json(call_effect_sink_value["port"]);
+    auto taint = Taint::from_json(call_effect_sink_value["taint"], context);
+    model.add_call_effect_sink(port, taint, *context.heuristics);
+  }
+
+  for (const auto& propagation_value :
+       JsonValidation::null_or_array(value, /* field */ "propagation")) {
+    auto input_path = AccessPath::from_json(propagation_value["input"]);
+    auto output_taint = Taint::from_json(propagation_value["output"], context);
+    model.add_propagation(input_path, output_taint, *context.heuristics);
+    if (propagation_value.isMember("config_overrides")) {
+      model.propagations_.apply_config_overrides(
+          TaintTreeConfigurationOverrides::from_json(
+              propagation_value["config_overrides"]));
+    }
+  }
+
+  for (const auto& sanitizer_value :
+       JsonValidation::null_or_array(value, /* field */ "sanitizers")) {
+    JsonValidation::validate_object(sanitizer_value);
+    auto sanitizer = Sanitizer::from_json(sanitizer_value, context);
+    if (sanitizer_value.isMember("port")) {
+      // This is a port sanitizer.
+      auto port = Root::from_json(sanitizer_value["port"]);
+      model.add_port_sanitizers(SanitizerSet{sanitizer}, port);
+    } else {
+      model.add_global_sanitizer(sanitizer);
+    }
+  }
+
+  for (const auto& attach_to_source_value :
+       JsonValidation::null_or_array(value, /* field */ "attach_to_sources")) {
+    JsonValidation::validate_object(attach_to_source_value);
+    auto port = Root::from_json(attach_to_source_value["port"]);
+    auto features =
+        FeatureSet::from_json(attach_to_source_value["features"], context);
+    model.add_attach_to_sources(port, features);
+  }
+
+  for (const auto& attach_to_sink_value :
+       JsonValidation::null_or_array(value, /* field */ "attach_to_sinks")) {
+    JsonValidation::validate_object(attach_to_sink_value);
+    auto port = Root::from_json(attach_to_sink_value["port"]);
+    auto features =
+        FeatureSet::from_json(attach_to_sink_value["features"], context);
+    model.add_attach_to_sinks(port, features);
+  }
+
+  for (const auto& attach_to_propagation_value : JsonValidation::null_or_array(
+           value, /* field */ "attach_to_propagations")) {
+    JsonValidation::validate_object(attach_to_propagation_value);
+    auto port = Root::from_json(attach_to_propagation_value["port"]);
+    auto features =
+        FeatureSet::from_json(attach_to_propagation_value["features"], context);
+    model.add_attach_to_propagations(port, features);
+  }
+
+  for (const auto& add_features_to_argument_value :
+       JsonValidation::null_or_array(
+           value, /* field */ "add_features_to_arguments")) {
+    JsonValidation::validate_object(add_features_to_argument_value);
+    auto port = Root::from_json(add_features_to_argument_value["port"]);
+    if (add_features_to_argument_value.isMember("via_value_of")) {
+      TaggedRootSet via_value_of_ports;
+      for (const auto& add_feature_value :
+           JsonValidation::null_or_array(value, /* field */ "via_value_of")) {
+        via_value_of_ports.add(TaggedRoot::from_json(add_feature_value));
+      }
+      model.add_add_via_value_of_features_to_arguments(
+          port, via_value_of_ports);
+    } else {
+      auto features = FeatureSet::from_json(
+          add_features_to_argument_value["features"], context);
+      model.add_add_features_to_arguments(port, features);
+    }
+  }
+
+  if (value.isMember("inline_as_getter")) {
+    model.set_inline_as_getter(AccessPathConstantDomain(
+        AccessPath::from_json(value["inline_as_getter"])));
+  }
+
+  if (value.isMember("inline_as_setter")) {
+    model.set_inline_as_setter(SetterAccessPathConstantDomain(
+        SetterAccessPath::from_json(value["inline_as_setter"])));
+  }
+
+  for (const auto& model_generator_value :
+       JsonValidation::null_or_array(value, /* field */ "model_generators")) {
+    model.add_model_generator(
+        ModelGeneratorName::from_json(model_generator_value, context));
+  }
+
+  // Intentionally skip parsing "issues". Model::from_json is used to read
+  // cached data from another (dependent) analysis. If those issues are of
+  // interest, they should be processed during that analysis instead of in
+  // every subsequent analysis that depends on it.
+
+  model.apply_config_overrides(global_config_overrides);
 
   return model;
 }
@@ -1296,12 +1936,20 @@ Json::Value Model::to_json(ExportOriginsMode export_origins_mode) const {
     value["freeze"] = freeze;
   }
 
+  if (!global_config_overrides_.is_bottom()) {
+    value["global_config_overrides"] = global_config_overrides_.to_json();
+  }
+
   if (!generations_.is_bottom()) {
     auto generations_value = Json::Value(Json::arrayValue);
     for (const auto& [port, generation_taint] : generations_.elements()) {
       auto generation_value = Json::Value(Json::objectValue);
       generation_value["port"] = port.to_json();
       generation_value["taint"] = generation_taint.to_json(export_origins_mode);
+      const auto& config_overrides = generations_.config_overrides(port.root());
+      if (!config_overrides.is_bottom()) {
+        generation_value["config_overrides"] = config_overrides.to_json();
+      }
       generations_value.append(generation_value);
     }
     value["generations"] = generations_value;
@@ -1315,6 +1963,11 @@ Json::Value Model::to_json(ExportOriginsMode export_origins_mode) const {
       parameter_source_value["port"] = port.to_json();
       parameter_source_value["taint"] =
           parameter_source_taint.to_json(export_origins_mode);
+      const auto& config_overrides =
+          parameter_sources_.config_overrides(port.root());
+      if (!config_overrides.is_bottom()) {
+        parameter_source_value["config_overrides"] = config_overrides.to_json();
+      }
       parameter_sources_value.append(parameter_source_value);
     }
     value["parameter_sources"] = parameter_sources_value;
@@ -1337,6 +1990,10 @@ Json::Value Model::to_json(ExportOriginsMode export_origins_mode) const {
       auto sink_value = Json::Value(Json::objectValue);
       sink_value["port"] = port.to_json();
       sink_value["taint"] = sink_taint.to_json(export_origins_mode);
+      const auto& config_overrides = sinks_.config_overrides(port.root());
+      if (!config_overrides.is_bottom()) {
+        sink_value["config_overrides"] = config_overrides.to_json();
+      }
       sinks_value.append(sink_value);
     }
     value["sinks"] = sinks_value;
@@ -1361,6 +2018,11 @@ Json::Value Model::to_json(ExportOriginsMode export_origins_mode) const {
       propagation_value["input"] = input_path.to_json();
       propagation_value["output"] =
           propagation_taint.to_json(export_origins_mode);
+      const auto& config_overrides =
+          propagations_.config_overrides(input_path.root());
+      if (!config_overrides.is_bottom()) {
+        propagation_value["config_overrides"] = config_overrides.to_json();
+      }
       propagations_value.append(propagation_value);
     }
     value["propagation"] = propagations_value;
@@ -1419,8 +2081,8 @@ Json::Value Model::to_json(ExportOriginsMode export_origins_mode) const {
     value["attach_to_propagations"] = attach_to_propagations_value;
   }
 
+  auto add_features_to_arguments_value = Json::Value(Json::arrayValue);
   if (!add_features_to_arguments_.is_bottom()) {
-    auto add_features_to_arguments_value = Json::Value(Json::arrayValue);
     for (const auto& [root, features] : add_features_to_arguments_) {
       auto add_features_to_arguments_root_value =
           Json::Value(Json::objectValue);
@@ -1429,6 +2091,25 @@ Json::Value Model::to_json(ExportOriginsMode export_origins_mode) const {
       add_features_to_arguments_value.append(
           add_features_to_arguments_root_value);
     }
+  }
+  if (!add_via_value_of_features_to_arguments_.is_bottom()) {
+    for (const auto& [root, via_value_of] :
+         add_via_value_of_features_to_arguments_) {
+      auto add_via_value_of_features_to_arguments_root_value =
+          Json::Value(Json::objectValue);
+      add_via_value_of_features_to_arguments_root_value["port"] =
+          root.to_json();
+
+      auto ports = Json::Value(Json::arrayValue);
+      for (const auto& tagged_root : via_value_of.elements()) {
+        ports.append(tagged_root.to_json());
+      }
+      add_via_value_of_features_to_arguments_root_value["via_value_of"] = ports;
+      add_features_to_arguments_value.append(
+          add_via_value_of_features_to_arguments_root_value);
+    }
+  }
+  if (!add_features_to_arguments_value.empty()) {
     value["add_features_to_arguments"] = add_features_to_arguments_value;
   }
 
@@ -1477,7 +2158,7 @@ std::ostream& operator<<(std::ostream& out, const Model& model) {
     out << ",\n  modes={";
     for (auto mode : k_all_modes) {
       if (model.modes_.test(mode)) {
-        out << " " << model_mode_to_string(mode);
+        out << model_mode_to_string(mode) << ", ";
       }
     }
     out << "}";
@@ -1486,37 +2167,67 @@ std::ostream& operator<<(std::ostream& out, const Model& model) {
     out << ",\n  freeze={";
     for (auto freeze_kind : k_all_freeze_kinds) {
       if (model.frozen_.test(freeze_kind)) {
-        out << " " << model_freeze_kind_to_string(freeze_kind);
+        out << model_freeze_kind_to_string(freeze_kind) << ", ";
       }
     }
     out << "}";
   }
+  if (!model.global_config_overrides_.is_bottom()) {
+    out << ",\n  global_config_overrides=" << model.global_config_overrides_;
+  }
   if (!model.generations_.is_bottom()) {
     out << ",\n  generations={\n";
-    for (const auto& [port, generation_taint] : model.generations_.elements()) {
-      for (const auto& generation : generation_taint.frames_iterator()) {
-        out << "    " << port << ": " << generation << ",\n";
-      }
+    for (const auto& binding : model.generations_.elements()) {
+      const AccessPath& port = binding.first;
+      const auto& config_overrides =
+          model.generations_.config_overrides(port.root());
+      binding.second.visit_frames(
+          [&out, &config_overrides, &port](
+              const CallInfo& call_info, const Frame& generation) {
+            out << "    " << port << ": call_info=" << call_info
+                << ", generation=" << generation;
+            if (!config_overrides.is_bottom()) {
+              out << ", overrides=" << config_overrides;
+            }
+            out << ",\n";
+          });
     }
     out << "  }";
   }
   if (!model.parameter_sources_.is_bottom()) {
     out << ",\n  parameter_sources={\n";
-    for (const auto& [port, parameter_source_taint] :
-         model.parameter_sources_.elements()) {
-      for (const auto& parameter_source :
-           parameter_source_taint.frames_iterator()) {
-        out << "    " << port << ": " << parameter_source << ",\n";
-      }
+    for (const auto& binding : model.parameter_sources_.elements()) {
+      const AccessPath& port = binding.first;
+      const auto& config_overrides =
+          model.parameter_sources_.config_overrides(port.root());
+      binding.second.visit_frames(
+          [&out, &config_overrides, &port](
+              const CallInfo& call_info, const Frame& parameter_source) {
+            out << "    " << port << ": call_info=" << call_info
+                << ", parameter_source=" << parameter_source;
+            if (!config_overrides.is_bottom()) {
+              out << ", overrides=" << config_overrides;
+            }
+            out << ",\n";
+          });
     }
     out << "  }";
   }
   if (!model.sinks_.is_bottom()) {
     out << ",\n  sinks={\n";
-    for (const auto& [port, sink_taint] : model.sinks_.elements()) {
-      for (const auto& sink : sink_taint.frames_iterator()) {
-        out << "    " << port << ": " << sink << ",\n";
-      }
+    for (const auto& binding : model.sinks_.elements()) {
+      const AccessPath& port = binding.first;
+      const auto& config_overrides = model.sinks_.config_overrides(port.root());
+      binding.second.visit_frames(
+          [&out, &config_overrides, &port](
+              const CallInfo& call_info, const Frame& sink) {
+            out << "    " << port << ": call_info=" << call_info
+                << ", sink=" << sink;
+            if (!config_overrides.is_bottom()) {
+              out << ", overrides=" << config_overrides;
+            }
+            out << ",\n";
+          });
     }
     out << "  }";
   }
@@ -1528,11 +2239,20 @@ std::ostream& operator<<(std::ostream& out, const Model& model) {
   }
   if (!model.propagations_.is_bottom()) {
     out << ",\n  propagation={\n";
-    for (const auto& [input_path, propagation_taint] :
-         model.propagations_.elements()) {
-      for (const auto& output : propagation_taint.frames_iterator()) {
-        out << "    " << input_path << ": " << output << ",\n";
-      }
+    for (const auto& binding : model.propagations_.elements()) {
+      const AccessPath& input_path = binding.first;
+      const auto& config_overrides =
+          model.propagations_.config_overrides(input_path.root());
+      binding.second.visit_frames(
+          [&out, &config_overrides, &input_path](
+              const CallInfo& call_info, const Frame& output) {
+            out << "    " << input_path << ": call_info=" << call_info
+                << ", output=" << output;
+            if (!config_overrides.is_bottom()) {
+              out << ", overrides=" << config_overrides;
+            }
+            out << ",\n";
+          });
     }
     out << "  }";
   }
@@ -1571,6 +2291,14 @@ std::ostream& operator<<(std::ostream& out, const Model& model) {
     out << ",\n add_features_to_arguments={\n";
     for (const auto& [root, features] : model.add_features_to_arguments_) {
       out << "    " << root << " -> " << features << ",\n";
+    }
+    out << "  }";
+  }
+  if (!model.add_via_value_of_features_to_arguments_.is_bottom()) {
+    out << ",\n add_via_value_of_features_to_arguments={\n";
+    for (const auto& [root, via_value_of_ports] :
+         model.add_via_value_of_features_to_arguments_) {
+      out << "    " << root << " -> " << via_value_of_ports.elements() << ",\n";
     }
     out << "  }";
   }
@@ -1632,8 +2360,9 @@ void Model::update_taint_tree(
 
   if (port.path().size() > truncation_amount) {
     new_taint.add_locally_inferred_features(widening_features);
+    new_taint.update_maximum_collapse_depth(CollapseDepth::zero());
+    port.truncate(truncation_amount);
   }
-  port.truncate(truncation_amount);
   tree.write(port, std::move(new_taint), UpdateKind::Weak);
 }
 
@@ -1704,34 +2433,23 @@ bool Model::check_taint_config_consistency(
   return true;
 }
 
-bool Model::check_taint_consistency(const Taint& taint, std::string_view kind)
-    const {
-  for (const auto& frame : taint.frames_iterator()) {
-    // If a method_ exists, there should be exactly one origin at the
-    // declaration frame.
-    const auto* origin = frame.origins().elements().singleton();
-    if (method_ && (origin == nullptr || !(*origin)->is<MethodOrigin>())) {
-      ModelConsistencyError::raise(fmt::format(
-          "Model for method `{}` contains a {} without origins.",
-          show(method_),
-          kind));
-      return false;
-    }
+bool Model::check_taint_consistency(const Taint& taint) const {
+  taint.visit_frames([this](const CallInfo&, const Frame& frame) {
     if (!frame.via_type_of_ports().is_bottom()) {
-      for (const auto& root : frame.via_type_of_ports()) {
+      for (const auto& tagged_root : frame.via_type_of_ports().elements()) {
         // Logs invalid ports specifed for via_type_of but does not prevent the
         // model from being created.
-        check_root_consistency(root);
+        check_root_consistency(tagged_root.root());
       }
     }
     if (!frame.via_value_of_ports().is_bottom()) {
-      for (const auto& root : frame.via_value_of_ports()) {
+      for (const auto& tagged_root : frame.via_value_of_ports().elements()) {
         // Logs invalid ports specifed for via_value_of but does not prevent the
         // model from being created.
-        check_root_consistency(root);
+        check_root_consistency(tagged_root.root());
       }
     }
-  }
+  });
   return true;
 }
 
@@ -1798,143 +2516,182 @@ bool Model::check_call_effect_port_consistency(
   return true;
 }
 
-void Model::add_generation(AccessPath port, Taint source) {
+void Model::add_generation(
+    AccessPath port,
+    Taint source,
+    const Heuristics& heuristics) {
   if (method_) {
-    source.set_origins(method_, AccessPathFactory::singleton().get(port));
+    source.add_origins_if_declaration(
+        method_, AccessPathFactory::singleton().get(port));
   }
 
-  if (!check_port_consistency(port) ||
-      !check_taint_consistency(source, "source")) {
+  if (!check_port_consistency(port) || !check_taint_consistency(source)) {
     return;
   }
 
-  if (port.path().size() > Heuristics::kGenerationMaxPortSize) {
+  if (port.path().size() > heuristics.generation_max_port_size()) {
     WARNING(
         1,
         "Truncating user-defined generation {} down to path length {} for method {}",
         port,
-        Heuristics::kGenerationMaxPortSize,
+        heuristics.generation_max_port_size(),
         method_ ? method_->get_name() : "nullptr");
+
+    port.truncate(heuristics.generation_max_port_size());
   }
-  port.truncate(Heuristics::kGenerationMaxPortSize);
   generations_.write(port, std::move(source), UpdateKind::Weak);
 }
 
-void Model::add_parameter_source(AccessPath port, Taint source) {
+void Model::add_parameter_source(
+    AccessPath port,
+    Taint source,
+    const Heuristics& heuristics) {
   if (method_) {
-    source.set_origins(method_, AccessPathFactory::singleton().get(port));
+    source.add_origins_if_declaration(
+        method_, AccessPathFactory::singleton().get(port));
   }
 
   if (!check_port_consistency(port) ||
       !check_parameter_source_port_consistency(port) ||
-      !check_taint_consistency(source, "source")) {
+      !check_taint_consistency(source)) {
     return;
   }
 
-  if (port.path().size() > Heuristics::kParameterSourceMaxPortSize) {
+  if (port.path().size() > heuristics.parameter_source_max_port_size()) {
     WARNING(
         1,
         "Truncating user-defined parameter source {} down to path length {} for method {}",
         port,
-        Heuristics::kParameterSourceMaxPortSize,
+        heuristics.parameter_source_max_port_size(),
         method_ ? method_->get_name() : "nullptr");
+
+    port.truncate(heuristics.parameter_source_max_port_size());
   }
-  port.truncate(Heuristics::kParameterSourceMaxPortSize);
   parameter_sources_.write(port, Taint{std::move(source)}, UpdateKind::Weak);
 }
 
-void Model::add_sink(AccessPath port, Taint sink) {
+void Model::add_sink(
+    AccessPath port,
+    Taint sink,
+    const Heuristics& heuristics) {
   if (method_) {
-    sink.set_origins(method_, AccessPathFactory::singleton().get(port));
+    sink.add_origins_if_declaration(
+        method_, AccessPathFactory::singleton().get(port));
   }
 
-  if (!check_port_consistency(port) || !check_taint_consistency(sink, "sink")) {
+  if (!check_port_consistency(port) || !check_taint_consistency(sink)) {
     return;
   }
 
-  if (port.path().size() > Heuristics::kSinkMaxPortSize) {
+  if (port.path().size() > heuristics.call_effect_sink_max_port_size()) {
     WARNING(
         1,
         "Truncating user-defined sink {} down to path length {} for method {}",
         port,
-        Heuristics::kSinkMaxPortSize,
+        heuristics.call_effect_sink_max_port_size(),
         method_ ? method_->get_name() : "nullptr");
+
+    port.truncate(heuristics.call_effect_sink_max_port_size());
   }
-  port.truncate(Heuristics::kSinkMaxPortSize);
   sinks_.write(port, Taint{std::move(sink)}, UpdateKind::Weak);
 }
 
-void Model::add_call_effect_source(AccessPath port, Taint source) {
+void Model::add_call_effect_source(
+    AccessPath port,
+    Taint source,
+    const Heuristics& heuristics) {
   if (!check_call_effect_port_consistency(port, "effect source")) {
     return;
   }
 
   if (method_) {
-    source.set_origins(method_, AccessPathFactory::singleton().get(port));
+    source.add_origins_if_declaration(
+        method_, AccessPathFactory::singleton().get(port));
   }
 
-  if (!check_taint_consistency(source, "effect source")) {
+  if (!check_taint_consistency(source)) {
     return;
   }
 
-  if (port.path().size() > Heuristics::kCallEffectSourceMaxPortSize) {
+  if (port.path().size() > heuristics.call_effect_source_max_port_size()) {
     WARNING(
         1,
         "Truncating user-defined call effect source port {} down to path length {} for method {}",
         port,
-        Heuristics::kCallEffectSourceMaxPortSize,
+        heuristics.call_effect_source_max_port_size(),
         method_ ? method_->get_name() : "nullptr");
-  }
 
-  port.truncate(Heuristics::kCallEffectSourceMaxPortSize);
+    port.truncate(heuristics.call_effect_source_max_port_size());
+  }
   call_effect_sources_.write(port, std::move(source), UpdateKind::Weak);
 }
 
-void Model::add_call_effect_sink(AccessPath port, Taint sink) {
+void Model::add_call_effect_sink(
+    AccessPath port,
+    Taint sink,
+    const Heuristics& heuristics) {
   if (!check_call_effect_port_consistency(port, "effect sink")) {
     return;
   }
 
   if (method_) {
-    sink.set_origins(method_, AccessPathFactory::singleton().get(port));
+    sink.add_origins_if_declaration(
+        method_, AccessPathFactory::singleton().get(port));
   }
 
-  if (!check_taint_consistency(sink, "effect sink")) {
+  if (!check_taint_consistency(sink)) {
     return;
   }
 
-  if (port.path().size() > Heuristics::kCallEffectSinkMaxPortSize) {
+  if (port.path().size() > heuristics.call_effect_sink_max_port_size()) {
     WARNING(
         1,
         "Truncating user-defined call effect sink port {} down to path length {} for method {}",
         port,
-        Heuristics::kCallEffectSinkMaxPortSize,
+        heuristics.call_effect_sink_max_port_size(),
         method_ ? method_->get_name() : "nullptr");
-  }
 
-  port.truncate(Heuristics::kCallEffectSinkMaxPortSize);
+    port.truncate(heuristics.call_effect_sink_max_port_size());
+  }
   call_effect_sinks_.write(port, std::move(sink), UpdateKind::Weak);
 }
 
-void Model::add_propagation(AccessPath input_path, Taint output) {
+void Model::add_propagation(
+    AccessPath input_path,
+    Taint output,
+    const Heuristics& heuristics) {
   if (!check_root_consistency(input_path.root())) {
     return;
   }
 
   if (method_) {
-    output.set_origins(method_, AccessPathFactory::singleton().get(input_path));
+    output.add_origins_if_declaration(
+        method_, AccessPathFactory::singleton().get(input_path));
   }
 
-  if (input_path.path().size() > Heuristics::kPropagationMaxInputPathSize) {
+  if (input_path.path().size() > heuristics.propagation_max_input_path_size()) {
     WARNING(
         1,
         "Truncating user-defined propagation {} down to path length {} for method {}",
         input_path.path(),
-        Heuristics::kPropagationMaxInputPathSize,
+        heuristics.propagation_max_input_path_size(),
         method_ ? method_->get_name() : "nullptr");
+
+    input_path.truncate(heuristics.propagation_max_input_path_size());
   }
-  input_path.truncate(Heuristics::kPropagationMaxInputPathSize);
   propagations_.write(input_path, output, UpdateKind::Weak);
+}
+
+void Model::apply_config_overrides(
+    const TaintTreeConfigurationOverrides& config_overrides) {
+  if (config_overrides.is_bottom()) {
+    return;
+  }
+
+  generations_.apply_config_overrides(config_overrides);
+  parameter_sources_.apply_config_overrides(config_overrides);
+  sinks_.apply_config_overrides(config_overrides);
+  propagations_.apply_config_overrides(config_overrides);
 }
 
 } // namespace marianatrench

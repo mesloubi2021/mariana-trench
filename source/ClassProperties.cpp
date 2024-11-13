@@ -47,85 +47,33 @@ bool is_manifest_relevant_kind(const std::string_view kind) {
       kind == "ServiceAIDLExitNode");
 }
 
-bool is_class_exported_via_uri(const DexClass* clazz) {
+bool is_class_accessible_via_dfa(const DexClass* clazz) {
   if (!clazz->get_anno_set()) {
     return false;
   }
 
-  auto dfa_annotation = marianatrench::constants::get_dfa_annotation();
-  auto private_schemes = marianatrench::constants::get_private_uri_schemes();
-
+  auto dfa_annotation_type =
+      marianatrench::constants::get_dfa_annotation_type();
   for (const auto& annotation : clazz->get_anno_set()->get_annotations()) {
     if (!annotation->type() ||
-        annotation->type()->str() != dfa_annotation.type) {
+        annotation->type()->str() != dfa_annotation_type) {
       continue;
     }
 
+    auto public_scope = marianatrench::constants::get_public_access_scope();
     for (const DexAnnotationElement& element : annotation->anno_elems()) {
-      if (element.string->str() != "value") {
-        continue;
+      if (element.string->str() == "enforceScope" &&
+          element.encoded_value->as_value() == 0) {
+        return true;
       }
 
-      auto* patterns =
-          dynamic_cast<DexEncodedValueArray*>(element.encoded_value.get());
-      mt_assert(patterns != nullptr);
-
-      for (auto& encoded_pattern : *patterns->evalues()) {
-        auto* pattern =
-            dynamic_cast<DexEncodedValueAnnotation*>(encoded_pattern.get());
-        mt_assert(pattern != nullptr);
-
-        if (!pattern->type() ||
-            pattern->type()->str() != dfa_annotation.pattern_type) {
-          continue;
-        }
-
-        std::string pattern_value = pattern->show();
-
-        // We only care about patterns that specify a scheme or a pattern
-        if (pattern_value.find("scheme") == std::string::npos &&
-            pattern_value.find("pattern") == std::string::npos) {
-          continue;
-        }
-
-        if (!std::any_of(
-                private_schemes.begin(),
-                private_schemes.end(),
-                [&pattern_value](std::string scheme) {
-                  return pattern_value.find(scheme) != std::string::npos;
-                })) {
-          LOG(2,
-              "Class {} has DFA annotations with a public URI scheme.",
-              clazz->get_name()->str());
-          return true;
-        }
+      if (element.string->str() == "accessScope" &&
+          element.encoded_value->show() == public_scope) {
+        return true;
       }
     }
   }
-
   return false;
-}
-
-bool has_privacy_decision_annotation(
-    const std::vector<std::unique_ptr<DexAnnotation>>& annotations) {
-  auto privacy_decision_type =
-      marianatrench::constants::get_privacy_decision_type();
-  for (const auto& annotation : annotations) {
-    if (annotation->type() &&
-        annotation->type()->str() == privacy_decision_type) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool has_privacy_decision_in_class(const DexClass* clazz) {
-  if (!clazz->get_anno_set()) {
-    return false;
-  }
-
-  return has_privacy_decision_annotation(
-      clazz->get_anno_set()->get_annotations());
 }
 
 bool has_permission_check(const DexClass* clazz) {
@@ -173,16 +121,16 @@ ClassProperties::ClassProperties(
       switch (tag_info.tag) {
         case ComponentTag::Activity:
         case ComponentTag::ActivityAlias:
-          emplace_classes(activities_, tag_info);
+          update_classes(activities_, tag_info);
           break;
         case ComponentTag::Service:
-          emplace_classes(services_, tag_info);
+          update_classes(services_, tag_info);
           break;
         case ComponentTag::Receiver:
-          emplace_classes(receivers_, tag_info);
+          update_classes(receivers_, tag_info);
           break;
         case ComponentTag::Provider:
-          emplace_classes(providers_, tag_info);
+          update_classes(providers_, tag_info);
           break;
       }
     }
@@ -196,7 +144,7 @@ ClassProperties::ClassProperties(
   std::mutex mutex;
   for (auto& scope : DexStoreClassesIterator(stores)) {
     walk::parallel::classes(scope, [&mutex, this](DexClass* clazz) {
-      if (is_class_exported_via_uri(clazz)) {
+      if (is_class_accessible_via_dfa(clazz)) {
         std::lock_guard<std::mutex> lock(mutex);
         dfa_public_scheme_classes_.emplace(clazz->str());
       }
@@ -205,23 +153,19 @@ ClassProperties::ClassProperties(
         std::lock_guard<std::mutex> lock(mutex);
         inline_permission_classes_.emplace(clazz->str());
       }
-
-      if (has_privacy_decision_in_class(clazz)) {
-        std::lock_guard<std::mutex> lock(mutex);
-        privacy_decision_classes_.emplace(clazz->str());
-      }
     });
   }
 }
 
-void ClassProperties::emplace_classes(
+void ClassProperties::update_classes(
     std::unordered_map<std::string_view, ExportedKind>& map,
     const ComponentTagInfo& tag_info) {
   if (tag_info.is_exported == BooleanXMLAttribute::True ||
       (tag_info.is_exported == BooleanXMLAttribute::Undefined &&
        tag_info.has_intent_filters)) {
     if (tag_info.permission.empty()) {
-      map.emplace(strings_[tag_info.classname], ExportedKind::Exported);
+      map.insert_or_assign(
+          strings_[tag_info.classname], ExportedKind::Exported);
     } else {
       map.emplace(
           strings_[tag_info.classname], ExportedKind::ExportedWithPermission);
@@ -282,29 +226,10 @@ bool ClassProperties::is_dfa_public(std::string_view class_name) const {
       dfa_public_scheme_classes_.count(outer_class) > 0;
 }
 
-bool ClassProperties::has_privacy_decision(const Method* method) const {
-  return (method->dex_method()->get_anno_set() &&
-          has_privacy_decision_annotation(
-              method->dex_method()->get_anno_set()->get_annotations())) ||
-      privacy_decision_classes_.count(method->get_class()->str()) > 0;
-}
-
-FeatureMayAlwaysSet ClassProperties::propagate_features(
-    const Method* caller,
-    const Method* /*callee*/,
-    const FeatureFactory& feature_factory) const {
-  FeatureSet features;
-
-  if (has_privacy_decision(caller)) {
-    features.add(feature_factory.get("via-privacy-decision"));
-  }
-
-  return FeatureMayAlwaysSet::make_always(features);
-}
-
 FeatureMayAlwaysSet ClassProperties::issue_features(
     const Method* method,
-    std::unordered_set<const Kind*> kinds) const {
+    const std::unordered_set<const Kind*>& kinds,
+    const Heuristics& heuristics) const {
   FeatureSet features;
   auto clazz = method->get_class()->str();
 
@@ -323,7 +248,7 @@ FeatureMayAlwaysSet ClassProperties::issue_features(
         !kind_features.contains(
             feature_factory_.get("via-caller-unexported"))) {
       kind_features.join_with(
-          compute_transitive_class_features(method, named_kind));
+          compute_transitive_class_features(method, named_kind, heuristics));
     }
     features.join_with(kind_features);
   }
@@ -427,7 +352,8 @@ ClassProperties::get_service_from_stub(const DexClass* clazz) {
 
 FeatureSet ClassProperties::compute_transitive_class_features(
     const Method* callee,
-    const NamedKind* kind) const {
+    const NamedKind* kind,
+    const Heuristics& heuristics) const {
   // Check cache
   if (const auto* target_method = via_dependencies_.get(callee, nullptr)) {
     return get_class_features(
@@ -465,7 +391,7 @@ FeatureSet ClassProperties::compute_transitive_class_features(
       continue;
     }
 
-    if (depth == Heuristics::kMaxDepthClassProperties) {
+    if (depth == heuristics.max_depth_class_properties()) {
       continue;
     }
 

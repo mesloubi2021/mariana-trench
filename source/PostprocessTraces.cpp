@@ -11,6 +11,7 @@
 #include <mariana-trench/Methods.h>
 #include <mariana-trench/PostprocessTraces.h>
 #include <mariana-trench/Registry.h>
+#include <mariana-trench/TransformsFactory.h>
 
 namespace marianatrench {
 
@@ -33,25 +34,33 @@ bool check_callee_kinds(
     return callee_taint.contains_kind(base_kind);
   }
 
-  for (const auto& frame : callee_taint.frames_iterator()) {
-    const auto* frame_kind = frame.kind();
-    if (frame_kind == nullptr) {
-      continue;
-    }
+  // Using an exception to break out of the loop early since `visit_frames`
+  // does not allow us to do that.
+  class frame_found : public std::exception {};
+  try {
+    callee_taint.visit_frames([base_kind, global_transforms, &context](
+                                  const CallInfo&, const Frame& frame) {
+      const auto* frame_kind = frame.kind();
+      if (frame_kind == nullptr) {
+        return;
+      }
 
-    const auto* frame_transform_kind = frame_kind->as<TransformKind>();
-    if (frame_transform_kind == nullptr ||
-        frame_transform_kind->base_kind() != base_kind) {
-      // No match
-      continue;
-    }
+      const auto* frame_transform_kind = frame_kind->as<TransformKind>();
+      if (frame_transform_kind == nullptr ||
+          frame_transform_kind->base_kind() != base_kind) {
+        // No match
+        return;
+      }
 
-    if (global_transforms ==
-        context.transforms_factory->concat(
-            frame_transform_kind->local_transforms(),
-            frame_transform_kind->global_transforms())) {
-      return true;
-    }
+      if (global_transforms ==
+          context.transforms_factory->concat(
+              frame_transform_kind->local_transforms(),
+              frame_transform_kind->global_transforms())) {
+        throw frame_found();
+      }
+    });
+  } catch (const frame_found&) {
+    return true;
   }
 
   return false;
@@ -60,13 +69,18 @@ bool check_callee_kinds(
 bool is_valid_generation(
     const Context& context,
     const Method* MT_NULLABLE callee,
-    const AccessPath& callee_port,
+    const AccessPath* MT_NULLABLE callee_port,
     const Kind* kind,
     const Registry& registry) {
   if (callee == nullptr) {
     // Leaf frame
     return true;
-  } else if (callee_port.root().is_anchor()) {
+  }
+
+  // Port should not be null for non-leaf frames (i.e. when callee != nullptr)
+  mt_assert(callee_port != nullptr);
+
+  if (callee_port->root().is_anchor()) {
     // Crtex frames which have canonical names instantiated during
     // `Frame::propagate` will have callee_ports `Anchor`. These are considered
     // leaves when it comes to traces (no next hop), even though the `Frame`
@@ -76,30 +90,35 @@ bool is_valid_generation(
   auto model = registry.get(callee);
 
   return check_callee_kinds(
-      context, kind, model.generations().raw_read(callee_port).root());
+      context, kind, model.generations().raw_read(*callee_port).root());
 }
 
 bool is_valid_sink(
     const Context& context,
     const Method* MT_NULLABLE callee,
-    const AccessPath& callee_port,
+    const AccessPath* MT_NULLABLE callee_port,
     const Kind* kind,
     const Registry& registry) {
   if (callee == nullptr) {
     // Leaf frame
     return true;
-  } else if (callee_port.root().is_anchor()) {
+  }
+
+  // Port should not be null for non-leaf frames (i.e. when callee != nullptr)
+  mt_assert(callee_port != nullptr);
+
+  if (callee_port->root().is_anchor()) {
     // Crtex frames which have canonical names instantiated during
     // `Frame::propagate` will have callee_ports `Anchor`. These are considered
     // leaves when it comes to traces (no next hop), even though the `Frame`
     // itself is not a leaf (has a callee).
     return true;
-  } else if (callee_port.root().is_call_effect()) {
+  } else if (callee_port->root().is_call_effect()) {
     return true;
   }
 
   auto model = registry.get(callee);
-  auto sinks = model.sinks().raw_read(callee_port).root();
+  auto sinks = model.sinks().raw_read(*callee_port).root();
 
   if (check_callee_kinds(context, kind, sinks)) {
     return true;
@@ -124,12 +143,14 @@ TaintAccessPathTree cull_collapsed_generations(
     TaintAccessPathTree generation_tree,
     const Registry& registry) {
   generation_tree.transform([&context, &registry](Taint generation_taint) {
-    generation_taint.filter_invalid_frames([&context, &registry](
-                                               const Method* MT_NULLABLE callee,
-                                               const AccessPath& callee_port,
-                                               const Kind* kind) {
-      return is_valid_generation(context, callee, callee_port, kind, registry);
-    });
+    generation_taint.filter_invalid_frames(
+        [&context, &registry](
+            const Method* MT_NULLABLE callee,
+            const AccessPath* MT_NULLABLE callee_port,
+            const Kind* kind) {
+          return is_valid_generation(
+              context, callee, callee_port, kind, registry);
+        });
     return generation_taint;
   });
   return generation_tree;
@@ -140,12 +161,13 @@ TaintAccessPathTree cull_collapsed_sinks(
     TaintAccessPathTree sink_tree,
     const Registry& registry) {
   sink_tree.transform([&context, &registry](Taint sink_taint) {
-    sink_taint.filter_invalid_frames([&context, &registry](
-                                         const Method* MT_NULLABLE callee,
-                                         const AccessPath& callee_port,
-                                         const Kind* kind) {
-      return is_valid_sink(context, callee, callee_port, kind, registry);
-    });
+    sink_taint.filter_invalid_frames(
+        [&context, &registry](
+            const Method* MT_NULLABLE callee,
+            const AccessPath* MT_NULLABLE callee_port,
+            const Kind* kind) {
+          return is_valid_sink(context, callee, callee_port, kind, registry);
+        });
     return sink_taint;
   });
   return sink_tree;
@@ -158,13 +180,13 @@ IssueSet cull_collapsed_issues(
   issues.transform([&context, &registry](Issue issue) {
     issue.filter_sources([&context, &registry](
                              const Method* MT_NULLABLE callee,
-                             const AccessPath& callee_port,
+                             const AccessPath* MT_NULLABLE callee_port,
                              const Kind* kind) {
       return is_valid_generation(context, callee, callee_port, kind, registry);
     });
     issue.filter_sinks([&context, &registry](
                            const Method* MT_NULLABLE callee,
-                           const AccessPath& callee_port,
+                           const AccessPath* MT_NULLABLE callee_port,
                            const Kind* kind) {
       return is_valid_sink(context, callee, callee_port, kind, registry);
     });

@@ -13,6 +13,7 @@
 
 #include <DexStore.h>
 
+#include <mariana-trench/CachedModelsContext.h>
 #include <mariana-trench/IncludeMacros.h>
 #include <mariana-trench/Method.h>
 #include <mariana-trench/Options.h>
@@ -24,8 +25,9 @@ class Overrides final {
  public:
   explicit Overrides(
       const Options& options,
-      const Methods& methods,
-      const DexStoresVector& stores);
+      Methods& methods,
+      const DexStoresVector& stores,
+      const CachedModelsContext& cached_models_context);
 
   DELETE_COPY_CONSTRUCTORS_AND_ASSIGNMENTS(Overrides)
 
@@ -47,6 +49,9 @@ class Overrides final {
   bool has_obscure_override_for(const Method* method) const;
 
   Json::Value to_json() const;
+
+  static std::unordered_map<const Method*, std::unordered_set<const Method*>>
+  from_json(const Json::Value& value, Methods& methods);
 
  private:
   UniquePointerConcurrentMap<const Method*, std::unordered_set<const Method*>>

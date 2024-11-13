@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <string_view>
+
 #include <mariana-trench/Frame.h>
 #include <mariana-trench/MethodContext.h>
 #include <mariana-trench/TaintTree.h>
@@ -15,10 +17,22 @@ namespace marianatrench {
 
 namespace transforms {
 
+enum class TransformDirection { Forward, Backward };
+
 TaintTree apply_propagation(
     MethodContext* context,
-    const Frame& propagation,
-    TaintTree input_taint_tree);
+    const CallInfo& propagation_call_info,
+    const Frame& propagation_frame,
+    TaintTree input_taint_tree,
+    TransformDirection direction);
+
+Taint apply_source_as_transform_to_sink(
+    MethodContext* context,
+    const Taint& source_taint,
+    const TransformList* source_as_transform,
+    const Taint& sink_taint,
+    std::string_view callee,
+    const Position* position);
 
 } // namespace transforms
 } // namespace marianatrench

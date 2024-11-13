@@ -63,6 +63,9 @@ class Positions final {
       int start = k_unknown_start,
       int end = k_unknown_end) const;
 
+  const Position*
+  get(const std::string* MT_NULLABLE path, int line, int start, int end) const;
+
   const Position* get(
       const Position* position,
       std::optional<Root> port,
@@ -72,6 +75,8 @@ class Positions final {
       const;
 
   const Position* unknown() const;
+
+  const std::string* MT_NULLABLE get_path(const DexMethod* method) const;
 
   static std::string execute_and_catch_output(
       const std::string& command,

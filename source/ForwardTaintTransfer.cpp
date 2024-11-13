@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <mariana-trench/AccessPathFactory.h>
 #include <mariana-trench/ArtificialMethods.h>
 #include <mariana-trench/CallGraph.h>
 #include <mariana-trench/ClassProperties.h>
@@ -19,6 +20,7 @@
 #include <mariana-trench/PartialKind.h>
 #include <mariana-trench/Positions.h>
 #include <mariana-trench/Rules.h>
+#include <mariana-trench/SourceSinkWithExploitabilityRule.h>
 #include <mariana-trench/TransferCall.h>
 #include <mariana-trench/TransformOperations.h>
 #include <mariana-trench/TriggeredPartialKind.h>
@@ -64,9 +66,14 @@ bool ForwardTaintTransfer::analyze_check_cast(
     taint.add_locally_inferred_features(features);
   }
 
-  LOG_OR_DUMP(context, 4, "Tainting result register with {}", taint);
-  environment->write(
-      aliasing.result_memory_location(), taint, UpdateKind::Strong);
+  auto memory_location = aliasing.result_memory_locations();
+  LOG_OR_DUMP(
+      context,
+      4,
+      "Tainting result register at {} with {}",
+      show(memory_location),
+      taint);
+  environment->write(memory_location, taint, UpdateKind::Strong);
 
   return false;
 }
@@ -85,24 +92,21 @@ bool ForwardTaintTransfer::analyze_iget(
         3,
         "Unable to resolve access of instance field {}",
         show(instruction->get_field()));
-  }
-
-  // Read user defined field model.
-  auto declared_field_model =
-      field_target ? context->registry.get(field_target->field) : FieldModel();
-
-  if (!declared_field_model.empty()) {
+  } else {
     const auto& aliasing = context->aliasing.get(instruction);
-    LOG_OR_DUMP(
-        context,
-        4,
-        "Tainting register {} with {}",
-        k_result_register,
-        declared_field_model.sources());
-    environment->write(
-        aliasing.result_memory_locations(),
-        declared_field_model.sources(),
-        UpdateKind::Weak);
+    auto field_sources =
+        context->field_sources_at_callsite(*field_target, aliasing);
+    if (!field_sources.is_bottom()) {
+      auto memory_locations = aliasing.result_memory_locations();
+      LOG_OR_DUMP(
+          context,
+          4,
+          "Tainting register {} at {} with {}",
+          k_result_register,
+          memory_locations,
+          field_sources);
+      environment->write(memory_locations, field_sources, UpdateKind::Weak);
+    }
   }
 
   return false;
@@ -123,19 +127,20 @@ bool ForwardTaintTransfer::analyze_sget(
         3,
         "Unable to resolve access of static field {}",
         show(instruction->get_field()));
+  } else {
+    auto field_sources =
+        context->field_sources_at_callsite(*field_target, aliasing);
+    auto* memory_location = aliasing.result_memory_location();
+    LOG_OR_DUMP(
+        context,
+        4,
+        "Tainting register {} at {} with {}",
+        k_result_register,
+        show(memory_location),
+        field_sources);
+    environment->write(
+        memory_location, TaintTree(field_sources), UpdateKind::Strong);
   }
-  auto field_model =
-      field_target ? context->registry.get(field_target->field) : FieldModel();
-  LOG_OR_DUMP(
-      context,
-      4,
-      "Tainting register {} with {}",
-      k_result_register,
-      field_model.sources());
-  environment->write(
-      aliasing.result_memory_location(),
-      TaintTree(field_model.sources()),
-      UpdateKind::Strong);
 
   return false;
 }
@@ -148,6 +153,7 @@ void apply_generations(
     ForwardTaintEnvironment* environment,
     const IRInstruction* instruction,
     const CalleeModel& callee,
+    const std::function<std::optional<Register>(Root)>& get_register,
     TaintTree& result_taint) {
   LOG_OR_DUMP(
       context,
@@ -155,6 +161,8 @@ void apply_generations(
       "Processing generations for call to `{}`",
       show(callee.method_reference));
 
+  // We operate on TaintTrees at the roots() directly, so config overrides are
+  // implicitly propagated.
   for (const auto& [root, generations] : callee.model.generations().roots()) {
     switch (root.kind()) {
       case Root::Kind::Return: {
@@ -163,18 +171,21 @@ void apply_generations(
         break;
       }
       case Root::Kind::Argument: {
-        auto parameter_position = root.parameter_position();
-        auto register_id = instruction->src(parameter_position);
+        auto register_id = get_register(root);
+        if (!register_id) {
+          // No register to taint
+          break;
+        }
+        auto memory_locations =
+            aliasing.register_memory_locations(*register_id);
         LOG_OR_DUMP(
             context,
             4,
-            "Tainting register {} with {}",
-            register_id,
+            "Tainting register {} at {} with {}",
+            *register_id,
+            memory_locations,
             generations);
-        environment->write(
-            aliasing.register_memory_locations(register_id),
-            generations,
-            UpdateKind::Weak);
+        environment->write(memory_locations, generations, UpdateKind::Weak);
         break;
       }
       default:
@@ -242,8 +253,9 @@ void apply_propagations(
       "Processing propagations for call to `{}`",
       show(callee.method_reference));
 
-  for (const auto& [input_path, propagations] :
-       callee.model.propagations().elements()) {
+  for (const auto& binding : callee.model.propagations().elements()) {
+    const AccessPath& input_path = binding.first;
+    const Taint& propagations = binding.second;
     LOG_OR_DUMP(context, 4, "Processing propagations from {}", input_path);
     if (!input_path.root().is_argument()) {
       WARNING_OR_DUMP(
@@ -270,14 +282,27 @@ void apply_propagations(
         aliasing.register_memory_locations(input_register_id),
         input_path.path().resolve(source_constant_arguments));
 
-    if (input_taint_tree.is_bottom()) {
+    if (input_taint_tree.is_bottom() &&
+        !callee.model.strong_write_on_propagation()) {
       continue;
     }
 
     auto position =
         context->positions.get(callee.position, input_path.root(), instruction);
 
-    for (const auto& propagation : propagations.frames_iterator()) {
+    propagations.visit_frames([&aliasing,
+                               &callee,
+                               &input_path,
+                               &input_taint_tree,
+                               &propagations,
+                               &result_taint,
+                               &source_constant_arguments,
+                               context,
+                               instruction,
+                               new_environment,
+                               position](
+                                  const CallInfo& call_info,
+                                  const Frame& propagation) {
       LOG_OR_DUMP(
           context,
           4,
@@ -286,15 +311,22 @@ void apply_propagations(
           propagation);
 
       const PropagationKind* propagation_kind = propagation.propagation_kind();
-      auto transformed_taint_tree =
-          transforms::apply_propagation(context, propagation, input_taint_tree);
+      auto transformed_taint_tree = transforms::apply_propagation(
+          context,
+          call_info,
+          propagation,
+          input_taint_tree,
+          transforms::TransformDirection::Forward);
+
+      // Apply config overrides for input root.
+      transformed_taint_tree.apply_config_overrides(
+          callee.model.propagations().config_overrides(input_path.root()));
 
       auto output_root = propagation_kind->root();
       FeatureMayAlwaysSet features = FeatureMayAlwaysSet::make_always(
           callee.model.add_features_to_arguments(output_root));
       features.add(propagation.features());
-      features.add(
-          propagations.locally_inferred_features(propagation.call_info()));
+      features.add(propagations.locally_inferred_features(call_info));
       features.add_always(
           callee.model.add_features_to_arguments(input_path.root()));
 
@@ -359,15 +391,18 @@ void apply_propagations(
             auto output_parameter_position = output_root.parameter_position();
             auto output_register_id =
                 instruction->src(output_parameter_position);
+            auto memory_locations =
+                aliasing.register_memory_locations(output_register_id);
             LOG_OR_DUMP(
                 context,
                 4,
-                "Tainting register {} path {} with {}",
+                "Tainting register {} at {} path {} with {}",
                 output_register_id,
+                memory_locations,
                 output_path_resolved,
                 output_taint_tree);
             new_environment->write(
-                aliasing.register_memory_locations(output_register_id),
+                memory_locations,
                 output_path_resolved,
                 std::move(output_taint_tree),
                 callee.model.strong_write_on_propagation() ? UpdateKind::Strong
@@ -378,7 +413,7 @@ void apply_propagations(
             mt_unreachable();
         }
       }
-    }
+    });
   }
 }
 
@@ -403,7 +438,7 @@ void create_issue(
     const Rule* rule,
     const Position* position,
     TextualOrderIndex sink_index,
-    std::string_view callee,
+    Issue::Callee callee,
     const FeatureMayAlwaysSet& extra_features) {
   // Skip creating issue if there are parameter type overrides.
   // The issue should be found in the copy of the Method that does not have
@@ -417,82 +452,340 @@ void create_issue(
   }
 
   std::unordered_set<const Kind*> kinds;
-  for (const auto& source_frame : source.frames_iterator()) {
+  source.visit_frames([&kinds](const CallInfo&, const Frame& source_frame) {
     kinds.emplace(source_frame.kind());
-  }
-  for (const auto& sink_frame : sink.frames_iterator()) {
+  });
+  sink.visit_frames([&kinds](const CallInfo&, const Frame& sink_frame) {
     kinds.emplace(sink_frame.kind());
-  }
+  });
 
-  source.add_locally_inferred_features(
-      context->class_properties.issue_features(context->method(), kinds));
+  source.add_locally_inferred_features(context->class_properties.issue_features(
+      context->method(), kinds, context->heuristics));
 
   sink.add_locally_inferred_features(extra_features);
   auto issue = Issue(
       Taint{std::move(source)},
       Taint{std::move(sink)},
       rule,
-      callee,
+      std::move(callee),
       sink_index,
       position);
   LOG_OR_DUMP(context, 4, "Found issue: {}", issue);
   context->new_model.add_issue(std::move(issue));
 }
 
-// Called when a source is detected to be flowing into a partial sink for a
-// multi source rule. The set of fulfilled sinks should be accumulated for
-// each argument at a callsite (an invoke instruction).
-void check_multi_source_multi_sink_rules(
+/**
+ * Checks if the given sources/sinks fulfill any rule. If so, create an issue.
+ */
+void check_source_sink_rules(
     MethodContext* context,
     const Kind* source_kind,
-    const Taint& source,
-    const PartialKind* sink_kind,
-    const Taint& sink,
-    FulfilledPartialKindState& fulfilled_partial_sinks,
-    const MultiSourceMultiSinkRule* rule,
+    const Taint& source_taint,
+    const Kind* sink_kind,
+    const Taint& sink_taint,
     const Position* position,
     TextualOrderIndex sink_index,
     std::string_view callee,
     const FeatureMayAlwaysSet& extra_features) {
-  // Features found by this branch of the multi-source-sink flow. Should be
-  // reported as part of the final issue discovered.
-  auto features = source.features_joined();
-  features.add(sink.features_joined());
-
-  auto issue_sink_frame = fulfilled_partial_sinks.fulfill_kind(
-      sink_kind, rule, features, sink, context->kind_factory);
-
-  if (issue_sink_frame) {
+  const auto& rules = context->rules.rules(source_kind, sink_kind);
+  for (const auto* rule : rules) {
     create_issue(
         context,
-        source,
-        *issue_sink_frame,
+        source_taint,
+        sink_taint,
         rule,
+        position,
+        sink_index,
+        std::string(callee),
+        extra_features);
+  }
+}
+
+/**
+ * Check if given exploitability source and source-as-transform sink fulfills
+ * any exploitability rule. If the rule is fulfilled, an issue is created. else
+ * the source-as-transform sink is stored in FulfilledExploitabilityState for
+ * backwards analysis to use.
+ */
+void check_fulfilled_exploitability_rules(
+    MethodContext* context,
+    const IRInstruction* instruction,
+    const Kind* exploitability_source_kind,
+    const Taint& exploitability_source_taint,
+    const TransformKind* source_as_transform_sink_kind,
+    const Taint& source_as_transform_sink_taint,
+    const Position* method_position,
+    TextualOrderIndex sink_index,
+    std::string_view callee,
+    const FeatureMayAlwaysSet& extra_features) {
+  mt_assert(source_as_transform_sink_kind->has_source_as_transform());
+
+  const auto& fulfilled_rules = context->rules.fulfilled_exploitability_rules(
+      exploitability_source_kind, source_as_transform_sink_kind);
+
+  if (fulfilled_rules.empty()) {
+    // If an exploitability rule cannot be fulfilled,
+    // pass it to backwards analysis to propagate the source-as-transform sinks.
+    context->partially_fulfilled_exploitability_state
+        .add_source_as_transform_sinks(
+            instruction, source_as_transform_sink_taint);
+    return;
+  }
+
+  auto exploitability_origins =
+      source_as_transform_sink_taint.exploitability_origins();
+  mt_assert(!exploitability_origins.is_bottom());
+
+  auto issue_sink_taint = source_as_transform_sink_taint;
+  issue_sink_taint.transform_frames(
+      [](Frame frame) { return frame.without_exploitability_origins(); });
+
+  // Create an issue per exploitability-origin for fulfilled exploitability
+  // rules
+  for (const auto* rule : fulfilled_rules) {
+    LOG_OR_DUMP(
+        context,
+        4,
+        "Fulfilled exploitability rule: {}. Creating issue with: Source: {}, Sink: {}",
+        rule->code(),
+        exploitability_source_kind->to_trace_string(),
+        source_as_transform_sink_kind->to_trace_string());
+
+    for (const auto* origin : exploitability_origins) {
+      const auto* exploitability_origin = origin->as<ExploitabilityOrigin>();
+      mt_assert(exploitability_origin != nullptr);
+
+      // Add exploitability_origin's callee as a feature.
+      auto extra_features_copy = extra_features;
+      extra_features_copy.add_always(
+          context->feature_factory.get_exploitability_origin_feature(
+              exploitability_origin));
+
+      create_issue(
+          context,
+          exploitability_source_taint,
+          issue_sink_taint,
+          rule,
+          method_position,
+          sink_index,
+          exploitability_origin,
+          extra_features_copy);
+    }
+  }
+}
+
+/**
+ * Check if given source and sink kinds partially fulfills any exploitability
+ * rule. If partially fulfilled, computes the corresponding source-as-transform
+ * sink taint and checks if the materialized source-as-transform sink can
+ * trivially fulfill any exploitability rule or if we need to infer the
+ * source-as-transform sink on the call-effect exploitability port of the
+ * root-callable by checking against exploitability sources of the caller
+ * itself.
+ */
+void check_partially_fulfilled_exploitability_rules(
+    MethodContext* context,
+    const IRInstruction* instruction,
+    const Kind* source_kind,
+    const Taint& source_taint,
+    const Kind* sink_kind,
+    const Taint& sink_taint,
+    const Position* position,
+    TextualOrderIndex sink_index,
+    std::string_view callee,
+    const FeatureMayAlwaysSet& extra_features) {
+  const auto& partially_fulfilled_rules =
+      context->rules.partially_fulfilled_exploitability_rules(
+          source_kind, sink_kind);
+
+  if (partially_fulfilled_rules.empty()) {
+    // No "source" to "sink" flow found.
+    return;
+  }
+
+  const auto* source_as_transform =
+      context->transforms_factory.get_source_as_transform(source_kind);
+  mt_assert(source_as_transform != nullptr);
+
+  auto transformed_sink_with_extra_trace =
+      transforms::apply_source_as_transform_to_sink(
+          context,
+          source_taint,
+          source_as_transform,
+          sink_taint,
+          callee,
+          position);
+
+  // Collapse taint tree as exploitability port does not use paths.
+  auto exploitability_sources =
+      context->previous_model.call_effect_sources()
+          .read(Root{Root::Kind::CallEffectExploitability})
+          .collapse();
+
+  if (exploitability_sources.is_bottom()) {
+    // If an exploitability rule cannot be fulfilled,
+    // pass it to backwards analysis to propagate the source-as-transform sinks.
+    context->partially_fulfilled_exploitability_state
+        .add_source_as_transform_sinks(
+            instruction, transformed_sink_with_extra_trace);
+    return;
+  }
+
+  // Add the position of the caller to call effect sources.
+  auto* caller_position = context->positions.get(context->method());
+
+  // Check for trivially fulfilled case.
+  for (const auto& [source_kind, source_taint] :
+       exploitability_sources.partition_by_kind()) {
+    for (const auto& [sink_kind, sink_taint] :
+         transformed_sink_with_extra_trace.partition_by_kind()) {
+      check_fulfilled_exploitability_rules(
+          context,
+          instruction,
+          /* exploitability_source_kind */ source_kind,
+          /* exploitability_source_taint */
+          source_taint.attach_position(caller_position),
+          /* source_as_transform_sink_kind */ sink_kind->as<TransformKind>(),
+          /* source_as_transform_sink_taint */ sink_taint,
+          position,
+          sink_index,
+          callee,
+          extra_features);
+    }
+  }
+}
+
+/**
+ * Check if the sources/sinks fulfill (or partially fulfill) any
+ * exploitability rules.
+ */
+void check_exploitability_rules(
+    MethodContext* context,
+    const IRInstruction* instruction,
+    const Kind* source_kind,
+    const Taint& source_taint,
+    const Kind* sink_kind,
+    Taint& sink_taint,
+    const Position* position,
+    TextualOrderIndex sink_index,
+    std::string_view callee,
+    const FeatureMayAlwaysSet& extra_features) {
+  const TransformKind* source_as_transform_sink = nullptr;
+  if (const auto* transform_kind = sink_kind->as<TransformKind>()) {
+    if (transform_kind->has_source_as_transform()) {
+      source_as_transform_sink = transform_kind;
+    }
+  }
+
+  if (source_as_transform_sink == nullptr) {
+    check_partially_fulfilled_exploitability_rules(
+        context,
+        instruction,
+        source_kind,
+        source_taint,
+        sink_kind,
+        sink_taint,
         position,
         sink_index,
         callee,
         extra_features);
   } else {
-    LOG_OR_DUMP(
+    // Exploitability rule can be fullfilled to the same exploitability_root
+    // through multiple call-sites in the current method. Since we want to
+    // group those issues together, we use the method's position here.
+    const auto* method_position = context->position();
+    check_fulfilled_exploitability_rules(
         context,
-        4,
-        "Found source kind: {} flowing into partial sink: {}, rule code: {}",
-        *source_kind,
-        *sink_kind,
-        rule->code());
+        instruction,
+        source_kind,
+        source_taint,
+        source_as_transform_sink,
+        sink_taint,
+        method_position,
+        sink_index,
+        callee,
+        extra_features);
   }
 }
 
-// Checks if the given sources/sinks fulfill any rule. If so, create an issue.
-//
-// If fulfilled_partial_sinks is non-null, also checks for multi-source rules
-// (partial rules). If a partial rule is fulfilled, this converts a partial
-// sink to a triggered sink and accumulates this list of triggered sinks. How
-// these sinks should be handled depends on what happens at other sinks/ports
-// within the same callsite/invoke. The caller MUST accumulate triggered sinks
-// at the callsite then pass the results to the backward analysis.
+/**
+ * If fulfilled_partial_sinks is non-null, checks if a source is flows into a
+ * partial sink for a multi source rule.
+ *
+ * If a partial rule is fulfilled, this converts a partial
+ * sink to a triggered sink and accumulates this list of triggered sinks. How
+ * these sinks should be handled depends on what happens at other sinks/ports
+ * within the same callsite/invoke. The caller MUST accumulate triggered sinks
+ * at the callsite then pass the results to the backward analysis.
+ */
+void check_multi_source_multi_sink_rules(
+    MethodContext* context,
+    const Kind* source_kind,
+    const Taint& source_taint,
+    const Kind* sink_kind,
+    const Taint& sink_taint,
+    const Position* position,
+    TextualOrderIndex sink_index,
+    std::string_view callee,
+    const FeatureMayAlwaysSet& extra_features,
+    FulfilledPartialKindState* MT_NULLABLE fulfilled_partial_sinks) {
+  if (fulfilled_partial_sinks == nullptr) {
+    return;
+  }
+
+  const auto* MT_NULLABLE partial_sink = sink_kind->as<PartialKind>();
+  if (partial_sink == nullptr) {
+    return;
+  }
+
+  const auto& partial_rules =
+      context->rules.partial_rules(source_kind, partial_sink);
+  for (const auto* partial_rule : partial_rules) {
+    // Features found by this branch of the multi-source-sink flow. Should be
+    // reported as part of the final issue discovered.
+    auto features = source_taint.features_joined();
+    features.add(sink_taint.features_joined());
+
+    auto issue_sink_frame = fulfilled_partial_sinks->fulfill_kind(
+        partial_sink,
+        partial_rule,
+        features,
+        sink_taint,
+        context->kind_factory);
+
+    if (issue_sink_frame) {
+      create_issue(
+          context,
+          source_taint,
+          *issue_sink_frame,
+          partial_rule,
+          position,
+          sink_index,
+          std::string(callee),
+          extra_features);
+    } else {
+      LOG_OR_DUMP(
+          context,
+          4,
+          "Found source kind: {} flowing into partial sink: {}, rule code: {}",
+          *source_kind,
+          *sink_kind,
+          partial_rule->code());
+    }
+  }
+}
+
+/**
+ * Checks if the given sources/sinks fulfill any of the rules:
+ * - Source to Sink rules: Create an issue.
+ * - Exploitability rules: Infer source-as-transform sinks and/or create an
+ * issue.
+ * - Multi source/sink rules: Create triggered counter parts and/or create an
+ * issue.
+ */
 void check_sources_sinks_flows(
     MethodContext* context,
+    const IRInstruction* instruction,
     const Taint& sources,
     const Taint& sinks,
     const Position* position,
@@ -504,7 +797,11 @@ void check_sources_sinks_flows(
     return;
   }
 
-  auto sources_by_kind = sources.partition_by_kind();
+  // Note: We use a sorted partition for source kinds. Deterministic
+  // iteration order is required to produce stable results for multi-source
+  // rules where both the source kinds are found within the context of the
+  // current method.
+  auto sources_by_kind = sources.sorted_partition_by_kind();
   auto sinks_by_kind = sinks.partition_by_kind();
   for (auto& [source_kind, source_taint] : sources_by_kind) {
     for (auto& [sink_kind, sink_taint] : sinks_by_kind) {
@@ -514,50 +811,51 @@ void check_sources_sinks_flows(
         // Intervals do not intersect, flow is not possible.
         continue;
       }
-      // Check if this satisfies any rule. If so, create the issue.
-      const auto& rules = context->rules.rules(source_kind, sink_kind);
-      for (const auto* rule : rules) {
-        create_issue(
-            context,
-            source_taint,
-            sink_taint,
-            rule,
-            position,
-            sink_index,
-            callee,
-            extra_features);
-      }
+
+      // Check if this satisfies any source-sink rule. If so, create the issue.
+      check_source_sink_rules(
+          context,
+          source_kind,
+          source_taint,
+          sink_kind,
+          sink_taint,
+          position,
+          sink_index,
+          callee,
+          extra_features);
+
+      // Check if this satisfies any exploitability rule.
+      check_exploitability_rules(
+          context,
+          instruction,
+          source_kind,
+          source_taint,
+          sink_kind,
+          sink_taint,
+          position,
+          sink_index,
+          callee,
+          extra_features);
 
       // Check if this satisfies any partial (multi-source/sink) rule.
-      if (fulfilled_partial_sinks != nullptr) {
-        const auto* MT_NULLABLE partial_sink = sink_kind->as<PartialKind>();
-        if (partial_sink != nullptr) {
-          const auto& partial_rules =
-              context->rules.partial_rules(source_kind, partial_sink);
-          for (const auto* partial_rule : partial_rules) {
-            check_multi_source_multi_sink_rules(
-                context,
-                source_kind,
-                source_taint,
-                partial_sink,
-                sink_taint,
-                *fulfilled_partial_sinks,
-                partial_rule,
-                position,
-                // TODO(T120190935) Add the ability to hold multiple callee
-                // ports per issue handle for multi-source multi-sink rules.
-                sink_index,
-                callee,
-                extra_features);
-          }
-        }
-      }
+      check_multi_source_multi_sink_rules(
+          context,
+          source_kind,
+          source_taint,
+          sink_kind,
+          sink_taint,
+          position,
+          sink_index,
+          callee,
+          extra_features,
+          fulfilled_partial_sinks);
     }
   }
 }
 
 void check_call_flows(
     MethodContext* context,
+    const IRInstruction* instruction,
     const InstructionAliasResults& aliasing,
     const ForwardTaintEnvironment* environment,
     const std::function<std::optional<Register>(Root)>& get_register,
@@ -587,6 +885,7 @@ void check_call_flows(
                 context->feature_factory.get_issue_broadening_feature()});
     check_sources_sinks_flows(
         context,
+        instruction,
         sources,
         sinks,
         callee.position,
@@ -601,6 +900,7 @@ void check_call_flows(
 
 void check_call_flows(
     MethodContext* context,
+    const IRInstruction* instruction,
     const InstructionAliasResults& aliasing,
     const ForwardTaintEnvironment* environment,
     const std::vector<Register>& instruction_sources,
@@ -610,6 +910,7 @@ void check_call_flows(
     FulfilledPartialKindState* MT_NULLABLE fulfilled_partial_sinks) {
   check_call_flows(
       context,
+      instruction,
       aliasing,
       environment,
       /* get_register */
@@ -649,7 +950,7 @@ void check_flows_to_array_allocation(
       AccessPath(Root(Root::Kind::Argument, 0)));
   auto array_allocation_sink = Taint{TaintConfig(
       /* kind */ context->artificial_methods.array_allocation_kind(),
-      /* callee_port */ *port,
+      /* callee_port */ port,
       /* callee */ nullptr,
       /* call_kind */ CallKind::origin(),
       /* call_position */ position,
@@ -660,7 +961,7 @@ void check_flows_to_array_allocation(
           context->origin_factory.method_origin(array_allocation_method, port)},
       /* inferred features */ {},
       /* locally_inferred_features */ {},
-      /* user features */ {},
+      /* user_features */ {},
       /* via_type_of_ports */ {},
       /* via_value_of_ports */ {},
       /* canonical_names */ {},
@@ -681,6 +982,7 @@ void check_flows_to_array_allocation(
     // Fulfilled partial sinks ignored. No partial sinks for array allocation.
     check_sources_sinks_flows(
         context,
+        instruction,
         sources,
         array_allocation_sink,
         position,
@@ -719,6 +1021,7 @@ void check_artificial_calls_flows(
     FulfilledPartialKindState fulfilled_partial_sinks;
     check_call_flows(
         context,
+        instruction,
         aliasing,
         environment,
         get_register,
@@ -730,6 +1033,7 @@ void check_artificial_calls_flows(
 
     check_call_flows(
         context,
+        instruction,
         aliasing,
         environment,
         get_register,
@@ -741,37 +1045,55 @@ void check_artificial_calls_flows(
 
     context->fulfilled_partial_sinks.store_artificial_call(
         &artificial_callee, std::move(fulfilled_partial_sinks));
+
+    // Consider also applying other parts of the model as in analyze_invoke
+    // (e.g. add_features_to_arguments, propagations, etc.). In theory, an
+    // artificial call/shim should be handled like a real call. Main difference
+    // is that its returned value is never used (i.e. `result_taint` can be
+    // ignored).
+    TaintTree result_taint;
+    apply_generations(
+        context,
+        aliasing,
+        environment,
+        instruction,
+        callee,
+        get_register,
+        result_taint);
   }
 }
 
 void check_call_effect_flows(
     MethodContext* context,
+    const IRInstruction* instruction,
     const CalleeModel& callee) {
-  const auto& caller_call_effect_sources =
-      context->previous_model.call_effect_sources();
-  if (caller_call_effect_sources.is_bottom()) {
-    return;
-  }
-
   const auto& callee_call_effect_sinks = callee.model.call_effect_sinks();
   if (callee_call_effect_sinks.is_bottom()) {
     return;
   }
 
-  LOG(5,
-      "Checking call effect flow in method {} from sources: {} to sinks: {}",
-      show(callee.model.method()),
-      caller_call_effect_sources,
-      callee_call_effect_sinks);
+  const auto& caller_call_effect_sources =
+      context->previous_model.call_effect_sources();
 
-  auto* position = context->positions.get(context->method());
-  for (const auto& [port, sources] : caller_call_effect_sources.elements()) {
-    const auto& call_effect_sinks = callee_call_effect_sinks.read(port);
-    for (const auto& [_, sinks] : call_effect_sinks.elements()) {
+  auto* caller_position = context->positions.get(context->method());
+  for (const auto& [port, sinks] : callee_call_effect_sinks.elements()) {
+    const auto& sources = caller_call_effect_sources.read(port);
+    if (sources.is_bottom()) {
+      if (port.root().is_call_chain_exploitability()) {
+        // If an exploitability rule cannot be fulfilled,
+        // pass it to backwards analysis to propagate it.
+        context->partially_fulfilled_exploitability_state
+            .add_source_as_transform_sinks(instruction, sinks);
+      }
+      continue;
+    }
+
+    for (const auto& [_, sources] : sources.elements()) {
       check_sources_sinks_flows(
           context,
+          instruction,
           // Add the position of the caller to call effect sources.
-          sources.attach_position(position),
+          sources.attach_position(caller_position),
           sinks,
           callee.position,
           callee.call_index,
@@ -784,25 +1106,53 @@ void check_call_effect_flows(
   }
 }
 
-void apply_call_effects(MethodContext* context, const CalleeModel& callee) {
-  const auto& callee_call_effect_sinks = callee.model.call_effect_sinks();
-  for (const auto& [port, sinks] : callee_call_effect_sinks.elements()) {
-    switch (port.root().kind()) {
-      case Root::Kind::CallEffectCallChain: {
-        LOG(5,
-            "Add inferred call effect sinks {} for method: {}",
+void check_artificial_call_effect_flows(
+    MethodContext* context,
+    const InstructionAliasResults& aliasing,
+    const IRInstruction* instruction) {
+  const auto& artificial_callees =
+      context->call_graph.artificial_callees(context->method(), instruction);
+
+  const auto* caller_position = context->positions.get(context->method());
+
+  const auto& caller_call_effect_sources =
+      context->previous_model.call_effect_sources();
+
+  for (const auto& artificial_callee : artificial_callees) {
+    auto callee = get_callee(context, artificial_callee, aliasing.position());
+    const auto& callee_call_effect_sinks = callee.model.call_effect_sinks();
+
+    if (callee_call_effect_sinks.is_bottom()) {
+      continue;
+    }
+
+    for (const auto& [port, sinks] : callee_call_effect_sinks.elements()) {
+      const auto& sources = caller_call_effect_sources.read(port);
+      if (sources.is_bottom()) {
+        if (port.root().is_call_chain_exploitability()) {
+          // If an exploitability rule cannot be fulfilled, pass it to backwards
+          // analysis to propagate it.
+          context->partially_fulfilled_exploitability_state
+              .add_source_as_transform_sinks(instruction, sinks);
+        }
+        continue;
+      }
+
+      for (const auto& [_, sources] : sources.elements()) {
+        check_sources_sinks_flows(
+            context,
+            instruction,
+            // Add the position of the caller to call effect sources.
+            sources.attach_position(caller_position),
             sinks,
-            show(context->method()));
-
-        auto sinks_copy = sinks;
-        context->new_model.add_inferred_call_effect_sinks(
-            port, std::move(sinks_copy));
-
-      } break;
-      case Root::Kind::CallEffectIntent:
-        break;
-      default:
-        mt_unreachable();
+            callee.position,
+            callee.call_index,
+            /* sink_index */ callee.resolved_base_method
+                ? callee.resolved_base_method->show()
+                : std::string(k_unresolved_callee),
+            /* extra features */ {},
+            /* fulfilled partial sinks */ nullptr);
+      }
     }
   }
 }
@@ -831,6 +1181,7 @@ bool ForwardTaintTransfer::analyze_invoke(
   FulfilledPartialKindState fulfilled_partial_sinks;
   check_call_flows(
       context,
+      instruction,
       aliasing,
       &previous_environment,
       instruction->srcs_vec(),
@@ -841,8 +1192,7 @@ bool ForwardTaintTransfer::analyze_invoke(
   context->fulfilled_partial_sinks.store_call(
       instruction, std::move(fulfilled_partial_sinks));
 
-  check_call_effect_flows(context, callee);
-  apply_call_effects(context, callee);
+  check_call_effect_flows(context, instruction, callee);
 
   TaintTree result_taint;
   apply_add_features_to_arguments(
@@ -874,7 +1224,16 @@ bool ForwardTaintTransfer::analyze_invoke(
   }
 
   apply_generations(
-      context, aliasing, environment, instruction, callee, result_taint);
+      context,
+      aliasing,
+      environment,
+      instruction,
+      callee,
+      /* get_register */
+      [instruction](Root parameter_position) -> std::optional<Register> {
+        return instruction->src(parameter_position.parameter_position());
+      },
+      result_taint);
 
   if (callee.resolved_base_method &&
       callee.resolved_base_method->returns_void()) {
@@ -896,6 +1255,7 @@ bool ForwardTaintTransfer::analyze_invoke(
 
   check_artificial_calls_flows(
       context, aliasing, instruction, environment, source_constant_arguments);
+  check_artificial_call_effect_flows(context, aliasing, instruction);
 
   return false;
 }
@@ -926,17 +1286,19 @@ void check_flows_to_field_sink(
         instruction->opcode());
     return;
   }
-  auto field_model =
-      field_target ? context->registry.get(field_target->field) : FieldModel();
-  auto sinks = field_model.sinks();
-  if (sinks.empty()) {
+
+  const auto& aliasing = context->aliasing.get(instruction);
+  auto field_sinks = context->field_sinks_at_callsite(*field_target, aliasing);
+  if (field_sinks.is_bottom()) {
     return;
   }
+
   for (const auto& [port, sources] : source_taint.elements()) {
     check_sources_sinks_flows(
         context,
+        instruction,
         sources,
-        sinks,
+        field_sinks,
         position,
         /* sink_index */ field_target->field_sink_index,
         /* callee */ show(field_target->field),
@@ -990,6 +1352,7 @@ bool ForwardTaintTransfer::analyze_iput(
   }
 
   check_artificial_calls_flows(context, aliasing, instruction, environment);
+  check_artificial_call_effect_flows(context, aliasing, instruction);
 
   return false;
 }
@@ -1100,12 +1463,16 @@ bool ForwardTaintTransfer::analyze_aput(
   taint.add_locally_inferred_features_and_local_position(features, position);
 
   // We use a single memory location for the array and its elements.
+  auto memory_locations =
+      aliasing.register_memory_locations(instruction->src(1));
   LOG_OR_DUMP(
-      context, 4, "Tainting register {} with {}", instruction->src(1), taint);
-  environment->write(
-      aliasing.register_memory_locations(instruction->src(1)),
-      taint,
-      UpdateKind::Weak);
+      context,
+      4,
+      "Tainting register {} at {} with {}",
+      instruction->src(1),
+      memory_locations,
+      taint);
+  environment->write(memory_locations, taint, UpdateKind::Weak);
 
   return false;
 }
@@ -1123,9 +1490,36 @@ bool ForwardTaintTransfer::analyze_filled_new_array(
     MethodContext* context,
     const IRInstruction* instruction,
     ForwardTaintEnvironment* environment) {
+  log_instruction(context, instruction);
   check_flows_to_array_allocation(
       context, context->aliasing.get(instruction), environment, instruction);
-  return analyze_default(context, instruction, environment);
+
+  const auto& aliasing = context->aliasing.get(instruction);
+
+  auto features = FeatureMayAlwaysSet::make_always(
+      {context->feature_factory.get("via-array")});
+  auto* position = context->positions.get(
+      context->method(),
+      aliasing.position(),
+      Root(Root::Kind::Return),
+      instruction);
+
+  mt_assert(instruction->srcs_size() >= 1);
+  auto taint = environment->read(
+      aliasing.register_memory_locations(instruction->src(0)));
+  for (size_t i = 1; i < instruction->srcs_size(); ++i) {
+    taint.join_with(environment->read(
+        aliasing.register_memory_locations(instruction->src(i))));
+  }
+
+  taint.add_locally_inferred_features_and_local_position(features, position);
+
+  // We use a single memory location for the array and its elements.
+  auto* memory_location = aliasing.result_memory_location();
+  LOG_OR_DUMP(context, 4, "Tainting {} with {}", show(memory_location), taint);
+  environment->write(memory_location, taint, UpdateKind::Weak);
+
+  return false;
 }
 
 namespace {
@@ -1199,9 +1593,11 @@ void infer_output_taint(
     context->new_model.add_inferred_generations(
         std::move(port),
         std::move(generation),
+        taint.config_overrides(),
         /* widening_features */
         FeatureMayAlwaysSet{
-            context->feature_factory.get_widen_broadening_feature()});
+            context->feature_factory.get_widen_broadening_feature()},
+        context->heuristics);
   }
 }
 
@@ -1214,21 +1610,23 @@ bool ForwardTaintTransfer::analyze_const_string(
   log_instruction(context, instruction);
 
   const std::string_view literal{instruction->get_string()->str()};
-  const LiteralModel model{context->registry.match_literal(literal)};
-  if (model.empty()) {
+  const auto& aliasing = context->aliasing.get(instruction);
+
+  auto sources = context->literal_sources_at_callsite(literal, aliasing);
+  if (sources.empty()) {
     return false;
   }
 
+  auto memory_locations = aliasing.result_memory_locations();
   LOG_OR_DUMP(
       context,
       4,
-      "Tainting register {} with {}",
+      "Tainting register {} at {} with {}",
       k_result_register,
-      model.sources());
+      memory_locations,
+      sources);
 
-  const auto& aliasing = context->aliasing.get(instruction);
-  environment->write(
-      aliasing.result_memory_locations(), model.sources(), UpdateKind::Strong);
+  environment->write(memory_locations, sources, UpdateKind::Strong);
 
   return false;
 }
@@ -1266,6 +1664,7 @@ bool ForwardTaintTransfer::analyze_return(
       // sinks are never partial.
       check_sources_sinks_flows(
           context,
+          instruction,
           sources,
           sinks,
           position,

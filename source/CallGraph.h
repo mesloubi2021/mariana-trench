@@ -26,6 +26,7 @@
 #include <mariana-trench/Fields.h>
 #include <mariana-trench/IncludeMacros.h>
 #include <mariana-trench/Issue.h>
+#include <mariana-trench/LifecycleMethods.h>
 #include <mariana-trench/Method.h>
 #include <mariana-trench/Options.h>
 #include <mariana-trench/Overrides.h>
@@ -52,6 +53,17 @@ class CallTarget final {
       std::unordered_set<const Method*>::const_iterator>>;
 
  public:
+  /**
+   * Call target for invoke-direct (a non-static direct method i.e.,
+   * an instance method that is non-overridable (private or constructor))
+   */
+  static CallTarget direct_call(
+      const IRInstruction* instruction,
+      const Method* MT_NULLABLE callee,
+      TextualOrderIndex call_index,
+      const DexType* MT_NULLABLE receiver_type);
+
+  /* Call target for invoke-static (direct calls without a receiver) */
   static CallTarget static_call(
       const IRInstruction* instruction,
       const Method* MT_NULLABLE callee,
@@ -62,6 +74,8 @@ class CallTarget final {
       const Method* MT_NULLABLE resolved_base_callee,
       TextualOrderIndex call_index,
       const DexType* MT_NULLABLE receiver_type,
+      const std::unordered_set<const DexType*>* MT_NULLABLE
+          receiver_local_extends,
       const ClassHierarchies& class_hierarchies,
       const Overrides& override_factory);
 
@@ -94,7 +108,7 @@ class CallTarget final {
   }
 
   /**
-   * For a static call, returns the callee.
+   * For a static and direct call, returns the callee.
    * For a virtual call, returns the resolved base callee. This is the base
    * method of all possible callees (i.e, all overrides). The method is
    * resolved, i.e if the method is not defined, we use the first defined
@@ -112,7 +126,7 @@ class CallTarget final {
     return resolved_base_callee_;
   }
 
-  /* For a virtual call, returns the inferred type of `this`. */
+  /* For a direct and virtual call, returns the inferred type of `this`. */
   const DexType* MT_NULLABLE receiver_type() const {
     return receiver_type_;
   }
@@ -141,16 +155,21 @@ class CallTarget final {
       const Method* MT_NULLABLE resolved_base_callee,
       TextualOrderIndex call_index,
       const DexType* MT_NULLABLE receiver_type,
-      const std::unordered_set<const Method*>* MT_NULLABLE overrides,
-      const std::unordered_set<const DexType*>* MT_NULLABLE receiver_extends);
+      const std::unordered_set<const DexType*>* MT_NULLABLE
+          receiver_local_extends,
+      const std::unordered_set<const DexType*>* MT_NULLABLE receiver_extends,
+      const std::unordered_set<const Method*>* MT_NULLABLE overrides);
 
  private:
   const IRInstruction* instruction_;
   const Method* MT_NULLABLE resolved_base_callee_;
   TextualOrderIndex call_index_;
   const DexType* MT_NULLABLE receiver_type_;
-  const std::unordered_set<const Method*>* MT_NULLABLE overrides_;
+  // Precise types that the receiver can be assigned at this callsite.
+  const std::unordered_set<const DexType*>* MT_NULLABLE receiver_local_extends_;
+  // All possible types that extend the receiver.
   const std::unordered_set<const DexType*>* MT_NULLABLE receiver_extends_;
+  const std::unordered_set<const Method*>* MT_NULLABLE overrides_;
 };
 
 } // namespace marianatrench
@@ -163,8 +182,9 @@ struct std::hash<marianatrench::CallTarget> {
     boost::hash_combine(seed, call_target.resolved_base_callee_);
     boost::hash_combine(seed, call_target.call_index_);
     boost::hash_combine(seed, call_target.receiver_type_);
-    boost::hash_combine(seed, call_target.overrides_);
+    boost::hash_combine(seed, call_target.receiver_local_extends_);
     boost::hash_combine(seed, call_target.receiver_extends_);
+    boost::hash_combine(seed, call_target.overrides_);
     return seed;
   }
 };
@@ -210,13 +230,15 @@ class CallGraph final {
  public:
   explicit CallGraph(
       const Options& options,
-      Methods& methods,
-      Fields& fields,
       const Types& types,
       const ClassHierarchies& class_hierarchies,
-      Overrides& overrides,
-      const FeatureFactory& feature_factory,
+      const LifecycleMethods& lifecycle_methods,
       const Shims& shims,
+      const FeatureFactory& feature_factory,
+      const Heuristics& heuristics,
+      Methods& methods,
+      Fields& fields,
+      Overrides& overrides,
       MethodMappings& method_mappings);
 
   DELETE_COPY_CONSTRUCTORS_AND_ASSIGNMENTS(CallGraph)
@@ -270,7 +292,14 @@ class CallGraph final {
      intermediate structures. */
   bool has_callees(const Method* caller);
 
+  Json::Value to_json(const Method* method, bool with_overrides = true) const;
   Json::Value to_json(bool with_overrides = true) const;
+
+  void dump_call_graph(
+      const std::filesystem::path& output_directory,
+      bool with_overrides = true,
+      const std::size_t batch_size =
+          JsonValidation::k_default_shard_limit) const;
 
  private:
   const Types& types_;

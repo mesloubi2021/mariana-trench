@@ -15,6 +15,7 @@
 #include <Resolver.h>
 #include <Walkers.h>
 
+#include <mariana-trench/AccessPathFactory.h>
 #include <mariana-trench/FeatureFactory.h>
 #include <mariana-trench/Fields.h>
 #include <mariana-trench/JsonValidation.h>
@@ -23,6 +24,7 @@
 #include <mariana-trench/OriginFactory.h>
 #include <mariana-trench/OriginSet.h>
 #include <mariana-trench/Redex.h>
+#include <mariana-trench/TaggedRootSet.h>
 #include <mariana-trench/model-generator/ModelGenerator.h>
 #include <mariana-trench/model-generator/ModelGeneratorNameFactory.h>
 
@@ -145,7 +147,7 @@ std::unordered_set<std::string_view> generator::get_parents_from_class(
 }
 
 std::unordered_set<std::string_view> generator::get_custom_parents_from_class(
-    DexClass* dex_class) {
+    const DexClass* dex_class) {
   std::unordered_set<std::string_view> parent_classes;
 
   while (true) {
@@ -276,14 +278,16 @@ void generator::add_propagation_to_return(
   for (const auto& feature : features) {
     user_features.add(context.feature_factory->get(feature));
   }
-  model.add_propagation(PropagationConfig(
-      /* input_path */ AccessPath(
-          Root(Root::Kind::Argument, parameter_position)),
-      /* kind */ context.kind_factory->local_return(),
-      /* output_paths */ PathTreeDomain{{Path{}, collapse_depth}},
-      /* inferred_features */ FeatureMayAlwaysSet::bottom(),
-      /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
-      /* user_features */ user_features));
+  model.add_propagation(
+      PropagationConfig(
+          /* input_path */ AccessPath(
+              Root(Root::Kind::Argument, parameter_position)),
+          /* kind */ context.kind_factory->local_return(),
+          /* output_paths */ PathTreeDomain{{Path{}, collapse_depth}},
+          /* inferred_features */ FeatureMayAlwaysSet::bottom(),
+          /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
+          /* user_features */ user_features),
+      *context.heuristics);
 }
 
 void generator::add_propagation_to_parameter(
@@ -300,13 +304,15 @@ void generator::add_propagation_to_parameter(
   for (const auto& feature : features) {
     user_features.add(context.feature_factory->get(feature));
   }
-  model.add_propagation(PropagationConfig(
-      /* input_path */ AccessPath(Root(Root::Kind::Argument, from)),
-      /* kind */ context.kind_factory->local_argument(to),
-      /* output_paths */ PathTreeDomain{{Path{}, collapse_depth}},
-      /* inferred_features */ FeatureMayAlwaysSet::bottom(),
-      /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
-      /* user_features */ user_features));
+  model.add_propagation(
+      PropagationConfig(
+          /* input_path */ AccessPath(Root(Root::Kind::Argument, from)),
+          /* kind */ context.kind_factory->local_argument(to),
+          /* output_paths */ PathTreeDomain{{Path{}, collapse_depth}},
+          /* inferred_features */ FeatureMayAlwaysSet::bottom(),
+          /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
+          /* user_features */ user_features),
+      *context.heuristics);
 }
 
 void generator::add_propagation_to_self(
@@ -355,11 +361,11 @@ bool has_annotation(
           return true;
         }
       }
+    } else {
+      // If we do not expect a certain value, return as we found the
+      // annotation.
+      return true;
     }
-
-    // If we do not expect a certain value, return as we found the
-    // annotation.
-    return true;
   }
 
   return false;
@@ -400,14 +406,29 @@ bool generator::has_annotation(
       dex_class->get_anno_set(), expected_type, expected_values);
 }
 
+std::vector<DexFieldRef*> generator::extract_annotation_fields(
+    const DexEncodedValue* encoded_value) {
+  std::vector<DexFieldRef*> results;
+  if (const auto* array_value =
+          dynamic_cast<const DexEncodedValueArray*>(encoded_value)) {
+    mt_assert(array_value->evalues() != nullptr);
+    for (const auto& value : *(array_value->evalues())) {
+      if (auto enum_value =
+              dynamic_cast<const DexEncodedValueField*>(value.get())) {
+        results.emplace_back(enum_value->field());
+      }
+    }
+  }
+  return results;
+}
+
 TaintConfig generator::source(
     Context& context,
-    const Method* method,
     const std::string& kind,
     const std::vector<std::string>& features,
     Root::Kind callee_port,
-    RootSetAbstractDomain via_type_of_ports,
-    RootSetAbstractDomain via_value_of_ports) {
+    TaggedRootSet via_type_of_ports,
+    TaggedRootSet via_value_of_ports) {
   // These ports must go with canonical names.
   mt_assert(
       callee_port != Root::Kind::Anchor && callee_port != Root::Kind::Producer);
@@ -417,21 +438,21 @@ TaintConfig generator::source(
     user_features.add(context.feature_factory->get(feature));
   }
 
-  const auto* port =
-      context.access_path_factory->get(AccessPath(Root(callee_port)));
+  const auto* MT_NULLABLE port = callee_port == Root::Kind::Leaf
+      ? nullptr
+      : context.access_path_factory->get(AccessPath(Root(callee_port)));
 
   return TaintConfig(
       /* kind */ context.kind_factory->get(kind),
-      /* callee_port */ *port,
+      /* callee_port */ port,
       /* callee */ nullptr,
       /* call_kind */ CallKind::declaration(),
       /* call_position */ nullptr,
       /* class_interval_context */ CallClassIntervalContext(),
       /* distance */ 0,
-      /* origins */
-      OriginSet{context.origin_factory->method_origin(method, port)},
+      /* origins */ {},
       /* inferred features */ FeatureMayAlwaysSet::bottom(),
-      /* user features */ user_features,
+      /* user_features */ user_features,
       /* via_type_of_ports */ via_type_of_ports,
       /* via_value_of_ports */ via_value_of_ports,
       /* canonical_names */ {},
@@ -443,45 +464,36 @@ TaintConfig generator::source(
 
 TaintConfig generator::sink(
     Context& context,
-    const Method* method,
     const std::string& kind,
     const std::vector<std::string>& features,
     Root::Kind callee_port,
-    RootSetAbstractDomain via_type_of_ports,
-    RootSetAbstractDomain via_value_of_ports,
-    CanonicalNameSetAbstractDomain canonical_names) {
-  // These ports must go with canonical names.
-  mt_assert(
-      canonical_names.size() != 0 ||
-      (callee_port != Root::Kind::Anchor &&
-       callee_port != Root::Kind::Producer));
-
-  // CRTEX leaves are origins.
-  CallKind call_kind =
-      canonical_names.size() > 0 ? CallKind::origin() : CallKind::declaration();
+    TaggedRootSet via_type_of_ports,
+    TaggedRootSet via_value_of_ports,
+    OriginSet origins) {
+  CallKind call_kind = CallKind::declaration();
   FeatureSet user_features;
   for (const auto& feature : features) {
     user_features.add(context.feature_factory->get(feature));
   }
 
-  const auto* port =
-      context.access_path_factory->get(AccessPath(Root(callee_port)));
+  const auto* MT_NULLABLE port = callee_port == Root::Kind::Leaf
+      ? nullptr
+      : context.access_path_factory->get(AccessPath(Root(callee_port)));
 
   return TaintConfig(
       /* kind */ context.kind_factory->get(kind),
-      /* callee_port */ *port,
+      /* callee_port */ port,
       /* callee */ nullptr,
       /* call_kind */ call_kind,
       /* call_position */ nullptr,
       /* class_interval_context */ CallClassIntervalContext(),
       /* distance */ 0,
-      /* origins */
-      OriginSet{context.origin_factory->method_origin(method, port)},
+      /* origins */ std::move(origins),
       /* inferred features */ FeatureMayAlwaysSet::bottom(),
       /* user features */ user_features,
       /* via_type_of_ports */ via_type_of_ports,
       /* via_type_of_ports */ via_value_of_ports,
-      /* canonical_names */ canonical_names,
+      /* canonical_names */ {},
       /* output_paths */ {},
       /* local_positions */ {},
       /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
@@ -490,13 +502,12 @@ TaintConfig generator::sink(
 
 TaintConfig generator::partial_sink(
     Context& context,
-    const Method* method,
     const std::string& kind,
     const std::string& label,
     const std::vector<std::string>& features,
     Root::Kind callee_port,
-    RootSetAbstractDomain via_type_of_ports,
-    RootSetAbstractDomain via_value_of_ports) {
+    TaggedRootSet via_type_of_ports,
+    TaggedRootSet via_value_of_ports) {
   // These ports must go with canonical names.
   mt_assert(
       callee_port != Root::Kind::Anchor && callee_port != Root::Kind::Producer);
@@ -506,19 +517,19 @@ TaintConfig generator::partial_sink(
     user_features.add(context.feature_factory->get(feature));
   }
 
-  const auto* port =
-      context.access_path_factory->get(AccessPath(Root(callee_port)));
+  const auto* MT_NULLABLE port = callee_port == Root::Kind::Leaf
+      ? nullptr
+      : context.access_path_factory->get(AccessPath(Root(callee_port)));
 
   return TaintConfig(
       /* kind */ context.kind_factory->get_partial(kind, label),
-      /* callee_port */ *port,
+      /* callee_port */ port,
       /* callee */ nullptr,
       /* call_kind */ CallKind::declaration(),
       /* call_position */ nullptr,
       /* class_interval_context */ CallClassIntervalContext(),
       /* distance */ 0,
-      /* origins */
-      OriginSet{context.origin_factory->method_origin(method, port)},
+      /* origins */ {},
       /* inferred features */ FeatureMayAlwaysSet::bottom(),
       /* user features */ user_features,
       /* via_type_of_ports */ via_type_of_ports,

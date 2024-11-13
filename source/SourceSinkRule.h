@@ -25,6 +25,9 @@ namespace marianatrench {
 /**
  * Represents the typical source -> sink rule
  * e.g. UserControlled -> LaunchIntent
+ * Optionally, transforms can be specified as a part of the rule which specifies
+ * an ordered list of transform kinds that the source and/or sink goes through.
+ * e.g. UserControlled -> T1 -> ... Tn -> LaunchIntent
  */
 class SourceSinkRule final : public Rule {
  public:
@@ -55,6 +58,11 @@ class SourceSinkRule final : public Rule {
   }
 
   bool uses(const Kind*) const override;
+
+  std::optional<CoveredRule> coverage(
+      const KindSet& sources,
+      const KindSet& sinks,
+      const TransformSet& transforms) const override;
 
   static std::unique_ptr<Rule> from_json(
       const std::string& name,

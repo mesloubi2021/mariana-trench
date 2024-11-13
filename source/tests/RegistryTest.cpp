@@ -33,6 +33,7 @@ TEST_F(RegistryTest, remove_kinds) {
   DexStore store("stores");
   store.add_classes(scope);
   auto context = test::make_context(store);
+  CachedModelsContext cached_models_context(context, *context.options);
 
   auto registry = Registry::load(
       context,
@@ -40,7 +41,8 @@ TEST_F(RegistryTest, remove_kinds) {
       /* generated_models */
       context.artificial_methods->models(
           context), // used to make sure we get ArrayAllocation
-      /* generated_field_models */ {});
+      /* generated_field_models */ {},
+      cached_models_context.models());
   context.rules =
       std::make_unique<Rules>(Rules::load(context, *context.options));
   context.used_kinds = std::make_unique<UsedKinds>(
@@ -121,8 +123,6 @@ TEST_F(RegistryTest, JoinWith) {
         ])"),
       /* field_models_value */ test::parse_json(R"([])"),
       /* literal_models_value */ test::parse_json(R"([])")));
-
-  auto model = Model();
 
   EXPECT_EQ(registry.get(method).generations().elements().size(), 1);
   EXPECT_EQ(
@@ -220,8 +220,9 @@ TEST_F(RegistryTest, ConstructorUseJoin) {
   Model model_with_source(
       /* method */ method,
       context,
-      /* modes */ Model::Mode::Normal,
-      /* frozen */ Model::FreezeKind::None,
+      /* modes */ {},
+      /* frozen */ {},
+      /* config_overrides */ {},
       /* generations */
       {{AccessPath(Root(Root::Kind::Return)),
         test::make_leaf_taint_config(source_kind)}});
@@ -229,8 +230,9 @@ TEST_F(RegistryTest, ConstructorUseJoin) {
   Model model_with_other_source(
       /* method */ method,
       context,
-      /* modes */ Model::Mode::Normal,
-      /* frozen */ Model::FreezeKind::None,
+      /* modes */ {},
+      /* frozen */ {},
+      /* config_overrides */ {},
       /* generations */
       {{AccessPath(Root(Root::Kind::Argument, 2)),
         test::make_leaf_taint_config(source_kind)}});

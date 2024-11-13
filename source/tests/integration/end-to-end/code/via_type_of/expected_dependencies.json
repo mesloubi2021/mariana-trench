@@ -50,7 +50,12 @@
   ],
   "Lcom/facebook/marianatrench/integrationtests/Origin;.source:()Ljava/lang/Object;" : 
   [
-    "Lcom/facebook/marianatrench/integrationtests/RecorderActivity;.badViaTypeOfPort:()V"
+    "Lcom/facebook/marianatrench/integrationtests/RecorderActivity;.badViaTypeOfPort:()V",
+    "Lcom/facebook/marianatrench/integrationtests/RecorderActivity;.reflectionViaTypeOfPort:()V"
+  ],
+  "Lcom/facebook/marianatrench/integrationtests/RecorderActivity;.sinkViaClass:(Ljava/lang/Object;Ljava/lang/Class;)V" : 
+  [
+    "Lcom/facebook/marianatrench/integrationtests/RecorderActivity;.reflectionViaTypeOfPort:()V"
   ],
   "Lcom/facebook/marianatrench/integrationtests/TestUri;.<init>:()V" : 
   [
@@ -108,7 +113,8 @@
     "Ljava/lang/StringBuilder;.<init>:()V",
     "Ljava/lang/Thread;.<init>:(Ljava/lang/Runnable;)V",
     "Ljava/text/MessageFormat;.<init>:()V",
-    "Ljava/util/TreeMap;.<init>:()V"
+    "Ljava/util/TreeMap;.<init>:()V",
+    "Lkotlin/jvm/internal/Intrinsics;.<init>:()V"
   ],
   "Ljava/lang/Runnable;.run:()V" : 
   [

@@ -5,9 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/string_file.hpp>
-
+#include <cstdio>
 #include <optional>
 
 #include <gtest/gtest.h>
@@ -19,6 +17,7 @@
 #include <TypeUtil.h>
 
 #include <mariana-trench/Dependencies.h>
+#include <mariana-trench/Filesystem.h>
 #include <mariana-trench/Redex.h>
 #include <mariana-trench/tests/Test.h>
 
@@ -29,25 +28,27 @@ namespace {
 class TypesTest : public test::Test {
  public:
   std::string temporary_directory() {
-    return (boost::filesystem::path(__FILE__).parent_path() / "temp").string();
+    return (std::filesystem::path(__FILE__).parent_path() / "temp").string();
   }
 
  private:
   void SetUp() override {
-    boost::filesystem::create_directory(this->temporary_directory());
+    std::filesystem::create_directory(this->temporary_directory());
   }
 
   void TearDown() override {
-    boost::filesystem::remove_all(this->temporary_directory());
+    std::filesystem::remove_all(this->temporary_directory());
   }
 };
 
 std::string create_proguard_configuration_file(
     const std::string& directory,
-    const std::string& file_name,
+    const std::string& extension,
     const std::string& contents) {
-  auto configuration_file = boost::filesystem::path(directory) / file_name;
-  boost::filesystem::save_string_file(configuration_file, contents);
+  auto file_name =
+      fmt::format("{}{}", std::tmpnam(/* filename */ nullptr), extension);
+  auto configuration_file = std::filesystem::path(directory) / file_name;
+  marianatrench::filesystem::save_string_file(configuration_file, contents);
   return configuration_file.native();
 }
 
@@ -289,7 +290,7 @@ TEST_F(TypesTest, GlobalInvokeVirtualTypes) {
     }
   )";
   auto proguard_configuration_file = create_proguard_configuration_file(
-      this->temporary_directory(), "proguard.pro", proguard_configuration);
+      this->temporary_directory(), ".pro", proguard_configuration);
 
   auto context = test_types(scope, proguard_configuration_file);
   assert(!root(dex_callee));

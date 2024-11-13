@@ -18,6 +18,7 @@
 #include <mariana-trench/MemoryLocation.h>
 #include <mariana-trench/Method.h>
 #include <mariana-trench/Model.h>
+#include <mariana-trench/PartiallyFulfilledExploitabilityRuleState.h>
 #include <mariana-trench/Position.h>
 #include <mariana-trench/Registry.h>
 
@@ -40,6 +41,8 @@ class MethodContext final {
     return previous_model.method();
   }
 
+  const Position* position() const;
+
   bool dump() const {
     return dump_;
   }
@@ -50,6 +53,18 @@ class MethodContext final {
       const std::vector<const DexType * MT_NULLABLE>& source_register_types,
       const std::vector<std::optional<std::string>>& source_constant_arguments,
       const CallClassIntervalContext& class_interval_context) const;
+
+  Taint field_sources_at_callsite(
+      const FieldTarget& field_target,
+      const InstructionAliasResults& aliasing) const;
+
+  Taint field_sinks_at_callsite(
+      const FieldTarget& field_target,
+      const InstructionAliasResults& aliasing) const;
+
+  Taint literal_sources_at_callsite(
+      std::string_view literal,
+      const InstructionAliasResults& aliasing) const;
 
   const Options& options;
   const ArtificialMethods& artificial_methods;
@@ -71,9 +86,12 @@ class MethodContext final {
   const UsedKinds& used_kinds;
   const AccessPathFactory& access_path_factory;
   const OriginFactory& origin_factory;
+  const Heuristics& heuristics;
   MemoryFactory memory_factory;
   AliasAnalysisResults aliasing;
   FulfilledPartialKindResults fulfilled_partial_sinks;
+  PartiallyFulfilledExploitabilityRuleState
+      partially_fulfilled_exploitability_state;
   const Model& previous_model;
   Model& new_model;
 

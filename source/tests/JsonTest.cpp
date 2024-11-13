@@ -10,6 +10,7 @@
 #include <mariana-trench/Access.h>
 #include <mariana-trench/CanonicalName.h>
 #include <mariana-trench/Constants.h>
+#include <mariana-trench/ExtraTrace.h>
 #include <mariana-trench/Field.h>
 #include <mariana-trench/FieldModel.h>
 #include <mariana-trench/Fields.h>
@@ -98,10 +99,10 @@ TEST_F(JsonTest, PathElementTest) {
 
   const auto any_index = PathElement::any_index();
 
-  EXPECT_EQ(PathElement::from_json("field"), field);
-  EXPECT_EQ(PathElement::from_json("[index]"), index);
-  EXPECT_EQ(PathElement::from_json("[*]"), any_index);
-  EXPECT_EQ(PathElement::from_json("[<Argument(1)>]"), value_of_argument_1);
+  EXPECT_EQ(PathElement::from_string("field"), field);
+  EXPECT_EQ(PathElement::from_string("[index]"), index);
+  EXPECT_EQ(PathElement::from_string("[*]"), any_index);
+  EXPECT_EQ(PathElement::from_string("[<Argument(1)>]"), value_of_argument_1);
 
   // index_from_value_of syntax is `[<` ... `>]`.
   EXPECT_EQ(
@@ -151,6 +152,35 @@ TEST_F(JsonTest, PathElementTest) {
 
   // Invalid syntax for PathElement
   EXPECT_THROW(AccessPath::from_json("Argument(0)]["), JsonValidationError);
+}
+
+TEST_F(JsonTest, Path) {
+  {
+    // Empty path
+    auto path = Path();
+    auto path_json = path.to_json();
+    EXPECT_EQ(path_json.asString(), "");
+    EXPECT_EQ(Path::from_json(path_json), path);
+  }
+
+  {
+    // Simple path with 1 element
+    auto path = Path({PathElement::field("field1")});
+    auto path_json = path.to_json();
+    EXPECT_EQ(path_json.asString(), ".field1");
+    EXPECT_EQ(Path::from_json(path_json), path);
+  }
+
+  {
+    // Path with multiple elements
+    auto path = Path(
+        {PathElement::field("field1"),
+         PathElement::field("field2"),
+         PathElement::any_index()});
+    auto path_json = path.to_json();
+    EXPECT_EQ(path_json.asString(), ".field1.field2[*]");
+    EXPECT_EQ(Path::from_json(path_json), path);
+  }
 }
 
 TEST_F(JsonTest, AccessPath) {
@@ -213,15 +243,7 @@ TEST_F(JsonTest, Method) {
   EXPECT_THROW(
       Method::from_json(test::parse_json(R"(1)"), context),
       JsonValidationError);
-  EXPECT_THROW(
-      Method::from_json(
-          test::parse_json(R"("LData;.non_existing:()V")"), context),
-      JsonValidationError);
   EXPECT_JSON_EQ(Method, R"("LData;.method:(LData;LData;)V")", method, context);
-  EXPECT_THROW(
-      Method::from_json(
-          test::parse_json(R"({"name": "LData;.non_existing:()V"})"), context),
-      JsonValidationError);
   EXPECT_EQ(
       Method::from_json(
           test::parse_json(R"({"name": "LData;.method:(LData;LData;)V"})"),
@@ -284,20 +306,20 @@ TEST_F(JsonTest, Method) {
               })"),
           context),
       JsonValidationError);
-  EXPECT_THROW(
-      Method::from_json(
-          test::parse_json(
-              R"({
-                "name": "LData;.method:(LData;LData;)V",
-                "parameter_type_overrides": [
-                  {
-                    "parameter": 1,
-                    "type": "LNonExisting;"
-                  }
-                ]
-              })"),
-          context),
-      JsonValidationError);
+  EXPECT_JSON_EQ(
+      Method,
+      R"({
+        "name": "LData;.method:(LData;LData;)V",
+        "parameter_type_overrides": [
+          {
+            "parameter": 1,
+            "type": "LNonExisting;"
+          }
+        ]
+      })",
+      context.methods->create(
+          dex_method, {{1, redex::get_or_make_type("LNonExisting;")}}),
+      context);
   EXPECT_JSON_EQ(
       Method,
       R"({
@@ -331,6 +353,16 @@ TEST_F(JsonTest, Method) {
           {{0, redex::get_type("LString;")},
            {1, redex::get_type("LInteger;")}}),
       context);
+
+  const auto* non_existant_method = Method::from_json(
+      test::parse_json(R"("LData;.non_existing:()V")"), context);
+  EXPECT_EQ(non_existant_method->dex_method()->is_external(), true);
+  EXPECT_EQ(1, non_existant_method->number_of_parameters());
+
+  non_existant_method = Method::from_json(
+      test::parse_json(R"({"name": "LData;.non_existing:()V"})"), context);
+  EXPECT_EQ(non_existant_method->dex_method()->is_external(), true);
+  EXPECT_EQ(1, non_existant_method->number_of_parameters());
 }
 
 TEST_F(JsonTest, Field) {
@@ -460,7 +492,9 @@ TEST_F(JsonTest, Sanitizer) {
           context),
       Sanitizer(
           SanitizerKind::Sources,
-          /* kinds */ KindSetAbstractDomain({kind1, kind2})));
+          /* kinds */
+          KindSetAbstractDomain(
+              {SourceSinkKind::source(kind1), SourceSinkKind::source(kind2)})));
   EXPECT_EQ(
       Sanitizer::from_json(
           test::parse_json(
@@ -469,7 +503,20 @@ TEST_F(JsonTest, Sanitizer) {
       Sanitizer(
           SanitizerKind::Sinks,
           /* kinds */
-          KindSetAbstractDomain({kind1, partial_kind, partial_kind2})));
+          KindSetAbstractDomain(
+              {SourceSinkKind::sink(kind1),
+               SourceSinkKind::sink(partial_kind),
+               SourceSinkKind::sink(partial_kind2)})));
+  EXPECT_EQ(
+      Sanitizer::from_json(
+          test::parse_json(
+              R"({"sanitize": "propagations", "kinds": [{"kind": "Source[Kind1]"}, {"kind": "Sink[Kind2]"}]})"),
+          context),
+      Sanitizer(
+          SanitizerKind::Propagations,
+          /* kinds */
+          KindSetAbstractDomain(
+              {SourceSinkKind::source(kind1), SourceSinkKind::sink(kind2)})));
 
   // Test to_json
   EXPECT_EQ(
@@ -477,23 +524,42 @@ TEST_F(JsonTest, Sanitizer) {
           R"({"sanitize": "sources", "kinds": [{"kind": "Kind1"}, {"kind": "Kind2"}]})"),
       test::sorted_json(Sanitizer(
                             SanitizerKind::Sources,
-                            /* kinds */ KindSetAbstractDomain({kind1, kind2}))
+                            /* kinds */
+                            KindSetAbstractDomain(
+                                {SourceSinkKind::source(kind1),
+                                 SourceSinkKind::source(kind2)}))
                             .to_json()));
   EXPECT_EQ(
       test::parse_json(
           R"({"sanitize": "sources", "kinds": [{"kind": "Kind1"}, {"kind": "Kind2"}, {"kind": "Partial:Kind3:a"}]})"),
-      test::sorted_json(
-          Sanitizer(
-              SanitizerKind::Sources,
-              /* kinds */ KindSetAbstractDomain({kind1, kind2, partial_kind}))
-              .to_json()));
+      test::sorted_json(Sanitizer(
+                            SanitizerKind::Sources,
+                            /* kinds */
+                            KindSetAbstractDomain(
+                                {SourceSinkKind::source(kind1),
+                                 SourceSinkKind::source(kind2),
+                                 SourceSinkKind::source(partial_kind)}))
+                            .to_json()));
   EXPECT_EQ(
       test::parse_json(
           R"({"sanitize": "sinks", "kinds": [{"kind": "Kind1"}, {"kind": "Kind3"}]})"),
-      test::sorted_json(Sanitizer(
-                            SanitizerKind::Sinks,
-                            /* kinds */ KindSetAbstractDomain({kind1, kind3}))
-                            .to_json()));
+      test::sorted_json(
+          Sanitizer(
+              SanitizerKind::Sinks,
+              /* kinds */
+              KindSetAbstractDomain(
+                  {SourceSinkKind::sink(kind1), SourceSinkKind::sink(kind3)}))
+              .to_json()));
+  EXPECT_EQ(
+      test::parse_json(
+          R"({"sanitize": "propagations", "kinds": [{"kind": "Sink[Kind2]"}, {"kind": "Source[Kind1]"}]})"),
+      test::sorted_json(
+          Sanitizer(
+              SanitizerKind::Propagations,
+              /* kinds */
+              KindSetAbstractDomain(
+                  {SourceSinkKind::source(kind1), SourceSinkKind::sink(kind2)}))
+              .to_json()));
 }
 
 TEST_F(JsonTest, Rule) {
@@ -843,7 +909,8 @@ TEST_F(JsonTest, TaintConfig) {
       test::make_taint_config(
           /* kind */ context.kind_factory->get("TestSource"),
           test::FrameProperties{
-              .callee_port = AccessPath(Root(Root::Kind::Return)),
+              .callee_port = context.access_path_factory->get(
+                  AccessPath(Root(Root::Kind::Return))),
               .callee = source_one,
               .call_position = context.positions->unknown(),
               .distance = 1,
@@ -862,7 +929,8 @@ TEST_F(JsonTest, TaintConfig) {
       test::make_taint_config(
           /* kind */ context.kind_factory->get("TestSource"),
           test::FrameProperties{
-              .callee_port = AccessPath(Root(Root::Kind::Return)),
+              .callee_port = context.access_path_factory->get(
+                  AccessPath(Root(Root::Kind::Return))),
               .callee = source_one,
               .call_position = context.positions->get("Object.java", 2),
               .distance = 2,
@@ -870,89 +938,6 @@ TEST_F(JsonTest, TaintConfig) {
               .locally_inferred_features = FeatureMayAlwaysSet::bottom()}));
 
   // Parse the features.
-  EXPECT_EQ(
-      TaintConfig::from_json(
-          test::parse_json(R"({
-            "kind": "TestSource",
-            "callee_port": "Leaf",
-            "always_features": ["FeatureOne"]
-          })"),
-          context),
-      test::make_taint_config(
-          /* kind */ context.kind_factory->get("TestSource"),
-          test::FrameProperties{
-              .inferred_features =
-                  FeatureMayAlwaysSet{
-                      context.feature_factory->get("FeatureOne")},
-              .locally_inferred_features = FeatureMayAlwaysSet::bottom()}));
-  EXPECT_EQ(
-      TaintConfig::from_json(
-          test::parse_json(R"({
-            "kind": "TestSource",
-            "callee_port": "Leaf",
-            "always_features": ["FeatureOne", "FeatureTwo"]
-          })"),
-          context),
-      test::make_taint_config(
-          /* kind */ context.kind_factory->get("TestSource"),
-          test::FrameProperties{
-              .inferred_features =
-                  FeatureMayAlwaysSet{
-                      context.feature_factory->get("FeatureOne"),
-                      context.feature_factory->get("FeatureTwo")},
-              .locally_inferred_features = FeatureMayAlwaysSet::bottom()}));
-  EXPECT_EQ(
-      TaintConfig::from_json(
-          test::parse_json(R"({
-            "kind": "TestSource",
-            "callee_port": "Leaf",
-            "may_features": ["FeatureOne"],
-            "always_features": ["FeatureTwo"]
-          })"),
-          context),
-      test::make_taint_config(
-          /* kind */ context.kind_factory->get("TestSource"),
-          test::FrameProperties{
-              .inferred_features = FeatureMayAlwaysSet(
-                  /* may */ FeatureSet{context.feature_factory->get(
-                      "FeatureOne")},
-                  /* always */
-                  FeatureSet{context.feature_factory->get("FeatureTwo")}),
-              .locally_inferred_features = FeatureMayAlwaysSet::bottom()}));
-  EXPECT_EQ(
-      TaintConfig::from_json(
-          test::parse_json(R"({
-            "kind": "TestSource",
-            "callee_port": "Leaf",
-            "may_features": ["FeatureOne"]
-          })"),
-          context),
-      test::make_taint_config(
-          /* kind */ context.kind_factory->get("TestSource"),
-          test::FrameProperties{
-              .inferred_features = FeatureMayAlwaysSet(
-                  /* may */ FeatureSet{context.feature_factory->get(
-                      "FeatureOne")},
-                  /* always */ FeatureSet{}),
-              .locally_inferred_features = FeatureMayAlwaysSet::bottom()}));
-  EXPECT_EQ(
-      TaintConfig::from_json(
-          test::parse_json(R"({
-            "kind": "TestSource",
-            "callee_port": "Leaf",
-            "may_features": ["FeatureOne", "FeatureTwo"]
-          })"),
-          context),
-      test::make_taint_config(
-          /* kind */ context.kind_factory->get("TestSource"),
-          test::FrameProperties{
-              .inferred_features = FeatureMayAlwaysSet(
-                  /* may */
-                  FeatureSet{
-                      context.feature_factory->get("FeatureOne"),
-                      context.feature_factory->get("FeatureTwo")},
-                  /* always */ FeatureSet{}),
-              .locally_inferred_features = FeatureMayAlwaysSet::bottom()}));
   EXPECT_EQ(
       TaintConfig::from_json(
           test::parse_json(
@@ -984,62 +969,6 @@ TEST_F(JsonTest, TaintConfig) {
               .user_features = FeatureSet{
                   context.feature_factory->get("FeatureOne"),
                   context.feature_factory->get("FeatureTwo")}}));
-  EXPECT_EQ(
-      TaintConfig::from_json(
-          test::parse_json(
-              R"({
-                "kind": "TestSource",
-                "features": ["FeatureOne"],
-                "may_features": ["FeatureTwo"]
-              })"),
-          context),
-      test::make_taint_config(
-          /* kind */ context.kind_factory->get("TestSource"),
-          test::FrameProperties{
-              .inferred_features = FeatureMayAlwaysSet(
-                  /* may */ FeatureSet{context.feature_factory->get(
-                      "FeatureTwo")},
-                  /* always */ FeatureSet{}),
-              .locally_inferred_features = FeatureMayAlwaysSet::bottom(),
-              .user_features =
-                  FeatureSet{context.feature_factory->get("FeatureOne")}}));
-  EXPECT_EQ(
-      TaintConfig::from_json(
-          test::parse_json(
-              R"({
-                "kind": "TestSource",
-                "features": ["FeatureOne"],
-                "may_features": ["FeatureTwo"],
-                "always_features": ["FeatureThree"]
-              })"),
-          context),
-      test::make_taint_config(
-          /* kind */ context.kind_factory->get("TestSource"),
-          test::FrameProperties{
-              .inferred_features = FeatureMayAlwaysSet(
-                  /* may */ FeatureSet{context.feature_factory->get(
-                      "FeatureTwo")},
-                  /* always */
-                  FeatureSet{context.feature_factory->get("FeatureThree")}),
-              .locally_inferred_features = FeatureMayAlwaysSet::bottom(),
-              .user_features =
-                  FeatureSet{context.feature_factory->get("FeatureOne")}}));
-  EXPECT_EQ(
-      TaintConfig::from_json(
-          test::parse_json(
-              R"({
-                "kind": "TestSource",
-                "features": ["FeatureOne"],
-                "may_features": [],
-                "always_features": []
-              })"),
-          context),
-      test::make_taint_config(
-          /* kind */ context.kind_factory->get("TestSource"),
-          test::FrameProperties{
-              .locally_inferred_features = FeatureMayAlwaysSet::bottom(),
-              .user_features =
-                  FeatureSet{context.feature_factory->get("FeatureOne")}}));
 
   // Parse via_type_of_ports
   EXPECT_EQ(
@@ -1055,8 +984,11 @@ TEST_F(JsonTest, TaintConfig) {
           test::FrameProperties{
               .inferred_features = FeatureMayAlwaysSet::bottom(),
               .locally_inferred_features = FeatureMayAlwaysSet::bottom(),
-              .via_type_of_ports = RootSetAbstractDomain(
-                  {Root(Root::Kind::Return), Root(Root::Kind::Argument, 1)})}));
+              .via_type_of_ports = TaggedRootSet(
+                  {TaggedRoot(Root(Root::Kind::Return), /* tag */ nullptr),
+                   TaggedRoot(
+                       Root(Root::Kind::Argument, 1),
+                       /* tag */ nullptr)})}));
 
   // Consistency checks.
   EXPECT_THROW(
@@ -1240,12 +1172,59 @@ TEST_F(JsonTest, Frame_Crtex) {
                 "canonical_names": [ {"template": "%programmatic_leaf_name%"} ]
               })"),
           context),
-      test::make_crtex_leaf_taint_config(
+      TaintConfig(
           context.kind_factory->get("TestSource"),
-          /* callee_port */ AccessPath(Root(Root::Kind::Anchor)),
+          /* callee_port */
+          context.access_path_factory->get(
+              AccessPath(Root(Root::Kind::Anchor))),
+          /* callee */ nullptr,
+          /* call_kind */ CallKind::declaration(),
+          /* call_position */ nullptr,
+          /* type_contexts */ CallClassIntervalContext(),
+          /* distance */ 0,
+          /* origins */ {},
+          /* inferred_features */ FeatureMayAlwaysSet::bottom(),
+          /* user_features */ {},
+          /* via_type_of_ports */ {},
+          /* via_value_of_ports */ {},
           /* canonical_names */
           CanonicalNameSetAbstractDomain{CanonicalName(
-              CanonicalName::TemplateValue{"%programmatic_leaf_name%"})}));
+              CanonicalName::TemplateValue{"%programmatic_leaf_name%"})},
+          /* output_paths */ {},
+          /* local_positions */ {},
+          /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
+          /* extra_traces */ {}));
+
+  // CRTEX consumer frames (identified by "producer" port) are a special case.
+  // They are "origins" rather than declarations, and the origins should contain
+  // information leading to the next hop (in the CRTEX producer run), i.e. the
+  // canonical port and name for the leaf.
+  const auto* producer_port = context.access_path_factory->get(AccessPath(
+      Root(Root::Kind::Producer),
+      Path{PathElement::field("123"), PathElement::field("formal(0)")}));
+  auto expected_taint_config = TaintConfig(
+      context.kind_factory->get("TestSource"),
+      /* callee_port */ producer_port,
+      /* callee */ nullptr,
+      /* call_kind */ CallKind::origin(),
+      /* call_position */ nullptr,
+      /* type_contexts */ CallClassIntervalContext(),
+      /* distance */ 0,
+      /* origins */
+      OriginSet{context.origin_factory->crtex_origin(
+          /* canonical_name */ "Lcom/android/MyClass;.MyMethod",
+          /* port */ producer_port)},
+      /* inferred_features */ FeatureMayAlwaysSet::bottom(),
+      /* user_features */ {},
+      /* via_type_of_ports */ {},
+      /* via_value_of_ports */ {},
+      /* canonical_names */
+      CanonicalNameSetAbstractDomain{CanonicalName(
+          CanonicalName::InstantiatedValue{"Lcom/android/MyClass;.MyMethod"})},
+      /* output_paths */ {},
+      /* local_positions */ {},
+      /* locally_inferred_features */ FeatureMayAlwaysSet::bottom(),
+      /* extra_traces */ {});
   EXPECT_EQ(
       TaintConfig::from_json(
           test::parse_json(
@@ -1255,16 +1234,7 @@ TEST_F(JsonTest, Frame_Crtex) {
                 "canonical_names": [ {"instantiated": "Lcom/android/MyClass;.MyMethod"} ]
               })#"),
           context),
-      test::make_crtex_leaf_taint_config(
-          context.kind_factory->get("TestSource"),
-          /* callee_port */
-          AccessPath(
-              Root(Root::Kind::Producer),
-              Path{PathElement::field("123"), PathElement::field("formal(0)")}),
-          /* canonical_names */
-          CanonicalNameSetAbstractDomain{
-              CanonicalName(CanonicalName::InstantiatedValue{
-                  "Lcom/android/MyClass;.MyMethod"})}));
+      expected_taint_config);
 }
 
 TEST_F(JsonTest, Frame) {
@@ -1282,9 +1252,8 @@ TEST_F(JsonTest, Frame) {
                       {context.feature_factory->get("FeatureTwo")}),
                   .user_features = FeatureSet(
                       {context.feature_factory->get("FeatureThree")})})
-              .to_json(ExportOriginsMode::Always)),
+              .to_json(CallInfo::make_default(), ExportOriginsMode::Always)),
       test::sorted_json(test::parse_json(R"({
-          "call_info": "Declaration",
           "kind": "TestSource",
           "always_features": ["FeatureTwo", "FeatureThree"]
         })")));
@@ -1296,45 +1265,13 @@ TEST_F(JsonTest, Frame) {
               test::FrameProperties{
                   .class_interval_context = CallClassIntervalContext(
                       ClassIntervals::Interval::finite(1, 2),
-                      /* preserves_type_context */ true),
-                  .call_kind = CallKind::callsite()})
-              .to_json(ExportOriginsMode::Always)),
+                      /* preserves_type_context */ true)})
+              .to_json(CallInfo::make_default(), ExportOriginsMode::Always)),
       test::sorted_json(test::parse_json(R"({
-          "call_info": "CallSite",
           "callee_interval": [1, 2],
           "kind": "TestSource",
           "preserves_type_context": true
         })")));
-}
-
-TEST_F(JsonTest, CallKind) {
-  Scope scope;
-  DexStore store("stores");
-  store.add_classes(scope);
-  auto context = test::make_context(store);
-
-  EXPECT_EQ(
-      test::sorted_json(
-          test::make_taint_frame(
-              /* kind */ context.kind_factory->get("TestSource"),
-              test::FrameProperties{.call_kind = CallKind::origin()})
-              .to_json(ExportOriginsMode::Always)),
-      test::parse_json(R"({
-          "call_info": "Origin",
-          "kind": "TestSource",
-        })"));
-  EXPECT_EQ(
-      test::sorted_json(
-          test::make_taint_frame(
-              /* kind */ context.kind_factory->get("TestSource"),
-              test::FrameProperties{
-                  .distance = 5, .call_kind = CallKind::callsite()})
-              .to_json(ExportOriginsMode::Always)),
-      test::parse_json(R"({
-          "call_info": "CallSite",
-          "kind": "TestSource",
-          "distance": 5
-        })"));
 }
 
 TEST_F(JsonTest, Propagation) {
@@ -1643,6 +1580,81 @@ TEST_F(JsonTest, Propagation) {
           /* user_features */ {}));
 }
 
+TEST_F(JsonTest, LifeCycleMethodGraphFromJson) {
+  std::string json_string = R"(
+    {
+      "entry": {
+          "instructions": [
+            { "method_name": "onCreate", "return_type": "V" }
+          ],
+          "successors": ["onStart"]
+      },
+      "onStart": {
+        "instructions": [
+            { "method_name": "onStart", "return_type": "V" }
+          ],
+          "successors": ["onResume", "onStop"]
+      },
+      "onResume": {
+        "instructions": [
+            { "method_name": "onResume", "return_type": "V" }
+          ],
+          "successors": ["onPause"]
+      },
+      "onPause": {
+        "instructions": [
+            { "method_name": "onPause", "return_type": "V" }
+          ],
+          "successors": ["onResume", "onStop"]
+      },
+      "onStop": {
+        "instructions": [
+            { "method_name": "onStop", "return_type": "V" }
+          ],
+          "successors": []
+      }
+    }
+  )";
+
+  Json::Value json_value = test::parse_json(json_string);
+
+  LifeCycleMethodGraph graph = LifeCycleMethodGraph::from_json(json_value);
+
+  const LifecycleGraphNode* entry_node = graph.get_node("entry");
+  EXPECT_NE(entry_node, nullptr);
+  EXPECT_EQ(entry_node->method_calls().size(), 1);
+  EXPECT_EQ(entry_node->method_calls()[0].get_method_name(), "onCreate");
+  EXPECT_EQ(entry_node->successors(), std::vector<std::string>{"onStart"});
+
+  const LifecycleGraphNode* onStart_node = graph.get_node("onStart");
+  EXPECT_NE(onStart_node, nullptr);
+  EXPECT_EQ(onStart_node->method_calls().size(), 1);
+  EXPECT_EQ(onStart_node->method_calls()[0].get_method_name(), "onStart");
+  EXPECT_EQ(
+      onStart_node->successors(),
+      (std::vector<std::string>{"onResume", "onStop"}));
+
+  const LifecycleGraphNode* onResume_node = graph.get_node("onResume");
+  EXPECT_NE(onResume_node, nullptr);
+  EXPECT_EQ(onResume_node->method_calls().size(), 1);
+  EXPECT_EQ(onResume_node->method_calls()[0].get_method_name(), "onResume");
+  EXPECT_EQ(onResume_node->successors(), std::vector<std::string>{"onPause"});
+
+  const LifecycleGraphNode* onPause_node = graph.get_node("onPause");
+  EXPECT_NE(onPause_node, nullptr);
+  EXPECT_EQ(onPause_node->method_calls().size(), 1);
+  EXPECT_EQ(onPause_node->method_calls()[0].get_method_name(), "onPause");
+  EXPECT_EQ(
+      onPause_node->successors(),
+      (std::vector<std::string>{"onResume", "onStop"}));
+
+  const LifecycleGraphNode* onStop_node = graph.get_node("onStop");
+  EXPECT_NE(onStop_node, nullptr);
+  EXPECT_EQ(onStop_node->method_calls().size(), 1);
+  EXPECT_EQ(onStop_node->method_calls()[0].get_method_name(), "onStop");
+  EXPECT_TRUE(onStop_node->successors().empty());
+}
+
 TEST_F(JsonTest, Model) {
   Scope scope;
   auto* dex_method = redex::create_void_method(
@@ -1658,11 +1670,11 @@ TEST_F(JsonTest, Model) {
   auto* method = context.methods->get(dex_method);
 
   EXPECT_THROW(
-      Model::from_json(method, test::parse_json(R"(1)"), context),
+      Model::from_config_json(method, test::parse_json(R"(1)"), context),
       JsonValidationError);
 
   EXPECT_EQ(
-      Model::from_json(method, test::parse_json(R"({})"), context),
+      Model::from_config_json(method, test::parse_json(R"({})"), context),
       Model(method, context));
   EXPECT_EQ(
       Model(method, context).to_json(ExportOriginsMode::Always),
@@ -1671,12 +1683,12 @@ TEST_F(JsonTest, Model) {
       })"));
 
   EXPECT_THROW(
-      Model::from_json(
+      Model::from_config_json(
           method, test::parse_json(R"({"modes": ["invalid-mode"]})"), context),
       JsonValidationError);
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"({
             "modes": [
@@ -1685,7 +1697,8 @@ TEST_F(JsonTest, Model) {
               "taint-in-taint-out",
               "no-join-virtual-overrides",
               "no-collapse-on-propagation",
-              "alias-memory-location-on-invoke"
+              "alias-memory-location-on-invoke",
+              "no-collapse-on-approximate"
             ]
           })"),
           context),
@@ -1696,7 +1709,8 @@ TEST_F(JsonTest, Model) {
               Model::Mode::TaintInTaintOut |
               Model::Mode::NoJoinVirtualOverrides |
               Model::Mode::NoCollapseOnPropagation |
-              Model::Mode::AliasMemoryLocationOnInvoke));
+              Model::Mode::AliasMemoryLocationOnInvoke |
+              Model::Mode::NoCollapseOnApproximate));
   EXPECT_EQ(
       test::sorted_json(
           Model(
@@ -1706,13 +1720,15 @@ TEST_F(JsonTest, Model) {
                   Model::Mode::TaintInTaintOut | Model::Mode::TaintInTaintThis |
                   Model::Mode::NoJoinVirtualOverrides |
                   Model::Mode::NoCollapseOnPropagation |
-                  Model::Mode::AliasMemoryLocationOnInvoke)
+                  Model::Mode::AliasMemoryLocationOnInvoke |
+                  Model::Mode::NoCollapseOnApproximate)
               .to_json(ExportOriginsMode::Always)),
       test::parse_json(R"#({
         "method": "LData;.method:(LData;LData;)V",
         "modes": [
           "add-via-obscure-feature",
           "alias-memory-location-on-invoke",
+          "no-collapse-on-approximate",
           "no-collapse-on-propagation",
           "no-join-virtual-overrides",
           "skip-analysis",
@@ -1725,10 +1741,13 @@ TEST_F(JsonTest, Model) {
             "output":
             [
               {
+                "call_info": {
+                  "call_kind": "Propagation",
+                  "port": "Argument(0)"
+                },
                 "kinds": [
                   {
                     "always_features": [ "via-obscure" ],
-                    "call_info": "Propagation",
                     "kind": "LocalArgument(0)",
                     "output_paths": { "": 0 }
                   }
@@ -1741,10 +1760,13 @@ TEST_F(JsonTest, Model) {
             "output":
             [
               {
+                "call_info": {
+                  "call_kind": "Propagation",
+                  "port": "Argument(0)"
+                },
                 "kinds": [
                   {
                     "always_features": [ "via-obscure" ],
-                    "call_info": "Propagation",
                     "kind": "LocalArgument(0)",
                     "output_paths": { "": 0 }
                   }
@@ -1756,14 +1778,14 @@ TEST_F(JsonTest, Model) {
       })#"));
 
   EXPECT_THROW(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"({"freeze": ["invalid-freeze-kind"]})"),
           context),
       JsonValidationError);
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"({
             "freeze": [
@@ -1777,14 +1799,14 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
+          {},
           Model::FreezeKind::Generations | Model::FreezeKind::ParameterSources |
               Model::FreezeKind::Sinks | Model::FreezeKind::Propagations));
   EXPECT_EQ(
       test::sorted_json(Model(
                             method,
                             context,
-                            Model::Mode::Normal,
+                            {},
                             Model::FreezeKind::Generations |
                                 Model::FreezeKind::ParameterSources |
                                 Model::FreezeKind::Sinks |
@@ -1796,16 +1818,16 @@ TEST_F(JsonTest, Model) {
       })#"));
 
   EXPECT_THROW(
-      Model::from_json(
+      Model::from_config_json(
           method, test::parse_json(R"({"generations": {}})"), context),
       JsonValidationError);
   EXPECT_THROW(
-      Model::from_json(
+      Model::from_config_json(
           method, test::parse_json(R"({"generations": 1})"), context),
       JsonValidationError);
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
           "generations": [
@@ -1819,8 +1841,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */
           {{AccessPath(Root(Root::Kind::Argument, 2)),
             test::make_leaf_taint_config(
@@ -1829,8 +1852,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */
           {{AccessPath(Root(Root::Kind::Argument, 2)),
             test::make_leaf_taint_config(
@@ -1843,9 +1867,9 @@ TEST_F(JsonTest, Model) {
           "port": "Argument(2)",
           "taint": [
             {
+              "call_info": { "call_kind": "Declaration" },
               "kinds": [
                 {
-                  "call_info": "Declaration",
                   "kind": "source_kind",
                   "origins": [{"method": "LData;.method:(LData;LData;)V", "port": "Argument(2)"}],
                 }
@@ -1857,12 +1881,12 @@ TEST_F(JsonTest, Model) {
     })#"));
 
   EXPECT_THROW(
-      Model::from_json(
+      Model::from_config_json(
           method, test::parse_json(R"({"parameter_sources": {}})"), context),
       JsonValidationError);
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
           "parameter_sources": [
@@ -1876,8 +1900,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */
           {{AccessPath(Root(Root::Kind::Argument, 1)),
@@ -1887,8 +1912,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */
           {{AccessPath(Root(Root::Kind::Argument, 1)),
@@ -1902,9 +1928,9 @@ TEST_F(JsonTest, Model) {
           "port": "Argument(1)",
           "taint": [
             {
+              "call_info": { "call_kind": "Declaration" },
               "kinds": [
                 {
-                  "call_info": "Declaration",
                   "kind": "source_kind",
                   "origins": [{"method": "LData;.method:(LData;LData;)V", "port": "Argument(1)"}],
                 }
@@ -1916,7 +1942,7 @@ TEST_F(JsonTest, Model) {
     })#"));
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
           "sources": [
@@ -1929,15 +1955,16 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */
           {{AccessPath(Root(Root::Kind::Return)),
             test::make_leaf_taint_config(
                 context.kind_factory->get("source_kind"))}},
           /* parameter_sources */ {}));
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
           "sources": [
@@ -1951,15 +1978,16 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */
           {{AccessPath(Root(Root::Kind::Return)),
             test::make_leaf_taint_config(
                 context.kind_factory->get("source_kind"))}},
           /* parameter_sources */ {}));
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
           "sources": [
@@ -1973,8 +2001,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */
           {{AccessPath(Root(Root::Kind::Argument, 1)),
@@ -1982,16 +2011,16 @@ TEST_F(JsonTest, Model) {
                 context.kind_factory->get("source_kind"))}}));
 
   EXPECT_THROW(
-      Model::from_json(
+      Model::from_config_json(
           method, test::parse_json(R"({"propagation": 1})"), context),
       JsonValidationError);
   EXPECT_THROW(
-      Model::from_json(
+      Model::from_config_json(
           method, test::parse_json(R"({"propagation": {}})"), context),
       JsonValidationError);
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
           "propagation": [
@@ -2009,8 +2038,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */ {},
           /* sinks */ {},
@@ -2038,8 +2068,9 @@ TEST_F(JsonTest, Model) {
           Model(
               method,
               context,
-              Model::Mode::Normal,
-              /* frozen */ Model::FreezeKind::None,
+              {},
+              /* frozen */ {},
+              /* config_overrides */ {},
               /* generations */ {},
               /* parameter_sources */ {},
               /* sinks */ {},
@@ -2078,9 +2109,12 @@ TEST_F(JsonTest, Model) {
             "input": "Argument(1)",
             "output": [
               {
+                "call_info": {
+                  "call_kind": "Propagation",
+                  "port": "Argument(0)"
+                },
                 "kinds": [
                   {
-                    "call_info": "Propagation",
                     "kind": "LocalArgument(0)",
                     "output_paths": { "": 0 }
                   }
@@ -2092,9 +2126,12 @@ TEST_F(JsonTest, Model) {
             "input": "Argument(2)",
             "output": [
               {
+                "call_info": {
+                  "call_kind": "Propagation",
+                  "port": "Argument(0)"
+                },
                 "kinds": [
                   {
-                    "call_info": "Propagation",
                     "kind": "LocalArgument(0)",
                     "output_paths": { ".x": 0, ".y": 0 }
                   }
@@ -2109,7 +2146,7 @@ TEST_F(JsonTest, Model) {
   const auto* kind2 = context.kind_factory->get_partial("Kind2", "a");
   const auto* kind3 = context.kind_factory->get("Kind3");
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
           "propagation": [
@@ -2127,8 +2164,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */ {},
           /* sinks */ {},
@@ -2144,7 +2182,9 @@ TEST_F(JsonTest, Model) {
                   /* user_features */ FeatureSet::bottom()),
           },
           /* global_sanitizers */
-          {Sanitizer(SanitizerKind::Sources, KindSetAbstractDomain({kind1})),
+          {Sanitizer(
+               SanitizerKind::Sources,
+               KindSetAbstractDomain(SourceSinkKind::source(kind1))),
            Sanitizer(
                SanitizerKind::Propagations, KindSetAbstractDomain::top())}));
   EXPECT_EQ(
@@ -2152,18 +2192,22 @@ TEST_F(JsonTest, Model) {
           Model(
               method,
               context,
-              Model::Mode::Normal,
-              /* frozen */ Model::FreezeKind::None,
+              {},
+              /* frozen */ {},
+              /* config_overrides */ {},
               /* generations */ {},
               /* parameter_sources */ {},
               /* sinks */ {},
               /* propagations */ {},
               /* global_sanitizers */
               {Sanitizer(
-                   SanitizerKind::Sources, KindSetAbstractDomain({kind1})),
+                   SanitizerKind::Sources,
+                   KindSetAbstractDomain(SourceSinkKind::source(kind1))),
                Sanitizer(
                    SanitizerKind::Sinks,
-                   KindSetAbstractDomain({kind1, kind2}))})
+                   KindSetAbstractDomain(
+                       {SourceSinkKind::sink(kind1),
+                        SourceSinkKind::sink(kind2)}))})
               .to_json(ExportOriginsMode::Always)),
       test::sorted_json(test::parse_json(R"#({
         "method": "LData;.method:(LData;LData;)V",
@@ -2173,7 +2217,7 @@ TEST_F(JsonTest, Model) {
         ]
       })#")));
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
           "propagation": [
@@ -2192,8 +2236,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */ {},
           /* sinks */ {},
@@ -2214,24 +2259,30 @@ TEST_F(JsonTest, Model) {
           /* port_sanitizers */
           {{Root(Root::Kind::Return),
             SanitizerSet(Sanitizer(
-                SanitizerKind::Sources, KindSetAbstractDomain({kind1})))},
+                SanitizerKind::Sources,
+                KindSetAbstractDomain(SourceSinkKind::source(kind1))))},
            {Root(Root::Kind::Argument, 0),
             SanitizerSet(Sanitizer(
-                SanitizerKind::Sinks, KindSetAbstractDomain({kind3})))}}));
+                SanitizerKind::Sinks,
+                KindSetAbstractDomain(SourceSinkKind::sink(kind3))))}}));
   EXPECT_EQ(
       test::sorted_json(
           Model(
               method,
               context,
-              Model::Mode::Normal,
-              /* frozen */ Model::FreezeKind::None,
+              {},
+              /* frozen */ {},
+              /* config_overrides */ {},
               /* generations */ {},
               /* parameter_sources */ {},
               /* sinks */ {},
               /* propagations */ {},
               /* global_sanitizers */
               {Sanitizer(
-                  SanitizerKind::Sinks, KindSetAbstractDomain({kind1, kind2}))},
+                  SanitizerKind::Sinks,
+                  KindSetAbstractDomain(
+                      {SourceSinkKind::sink(kind1),
+                       SourceSinkKind::sink(kind2)}))},
               /* port_sanitizers */
               {{Root(Root::Kind::Argument, 1),
                 SanitizerSet(Sanitizer(
@@ -2239,7 +2290,9 @@ TEST_F(JsonTest, Model) {
                {Root(Root::Kind::Argument, 2),
                 SanitizerSet(Sanitizer(
                     SanitizerKind::Sinks,
-                    KindSetAbstractDomain({kind1, kind3})))}})
+                    KindSetAbstractDomain(
+                        {SourceSinkKind::sink(kind1),
+                         SourceSinkKind::sink(kind3)})))}})
               .to_json(ExportOriginsMode::Always)),
       test::sorted_json(test::parse_json(R"#({
       "method": "LData;.method:(LData;LData;)V",
@@ -2251,14 +2304,16 @@ TEST_F(JsonTest, Model) {
     })#")));
 
   EXPECT_THROW(
-      Model::from_json(method, test::parse_json(R"({"sinks": 1})"), context),
+      Model::from_config_json(
+          method, test::parse_json(R"({"sinks": 1})"), context),
       JsonValidationError);
   EXPECT_THROW(
-      Model::from_json(method, test::parse_json(R"({"sinks": {}})"), context),
+      Model::from_config_json(
+          method, test::parse_json(R"({"sinks": {}})"), context),
       JsonValidationError);
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
           "sinks": [
@@ -2272,8 +2327,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */ {},
           /* sinks */
@@ -2286,8 +2342,9 @@ TEST_F(JsonTest, Model) {
       test::sorted_json(Model(
                             method,
                             context,
-                            Model::Mode::Normal,
-                            /* frozen */ Model::FreezeKind::None,
+                            {},
+                            /* frozen */ {},
+                            /* config_overrides */ {},
                             /* generations */ {},
                             /* parameter_sources */ {},
                             /* sinks */
@@ -2304,9 +2361,9 @@ TEST_F(JsonTest, Model) {
             "port": "Argument(2)",
             "taint": [
               {
+                "call_info": { "call_kind": "Declaration" },
                 "kinds": [
                   {
-                    "call_info": "Declaration",
                     "kind": "first_sink",
                     "origins": [{"method": "LData;.method:(LData;LData;)V", "port": "Argument(2)"}],
                   }
@@ -2320,8 +2377,9 @@ TEST_F(JsonTest, Model) {
       test::sorted_json(Model(
                             method,
                             context,
-                            Model::Mode::Normal,
-                            /* frozen */ Model::FreezeKind::None,
+                            {},
+                            /* frozen */ {},
+                            /* config_overrides */ {},
                             /* generations */ {},
                             /* parameter_sources */ {},
                             /* sinks */
@@ -2338,9 +2396,9 @@ TEST_F(JsonTest, Model) {
             "port": "Argument(2)",
             "taint": [
               {
+                "call_info": { "call_kind": "Declaration" },
                 "kinds": [
                   {
-                    "call_info": "Declaration",
                     "kind": "first_sink"
                   }
                 ]
@@ -2351,7 +2409,7 @@ TEST_F(JsonTest, Model) {
       })#"));
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
             "attach_to_sources": [
@@ -2365,8 +2423,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */ {},
           /* sinks */ {},
@@ -2381,8 +2440,9 @@ TEST_F(JsonTest, Model) {
           Model(
               method,
               context,
-              Model::Mode::Normal,
-              /* frozen */ Model::FreezeKind::None,
+              {},
+              /* frozen */ {},
+              /* config_overrides */ {},
               /* generations */ {},
               /* parameter_sources */ {},
               /* sinks */ {},
@@ -2404,7 +2464,7 @@ TEST_F(JsonTest, Model) {
       })#"));
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
             "attach_to_sinks": [
@@ -2418,8 +2478,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */ {},
           /* sinks */ {},
@@ -2435,8 +2496,9 @@ TEST_F(JsonTest, Model) {
           Model(
               method,
               context,
-              Model::Mode::Normal,
-              /* frozen */ Model::FreezeKind::None,
+              {},
+              /* frozen */ {},
+              /* config_overrides */ {},
               /* generations */ {},
               /* parameter_sources */ {},
               /* sinks */ {},
@@ -2459,7 +2521,7 @@ TEST_F(JsonTest, Model) {
       })#"));
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
             "attach_to_propagations": [
@@ -2473,8 +2535,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */ {},
           /* sinks */ {},
@@ -2491,8 +2554,9 @@ TEST_F(JsonTest, Model) {
           Model(
               method,
               context,
-              Model::Mode::Normal,
-              /* frozen */ Model::FreezeKind::None,
+              {},
+              /* frozen */ {},
+              /* config_overrides */ {},
               /* generations */ {},
               /* parameter_sources */ {},
               /* sinks */ {},
@@ -2516,7 +2580,7 @@ TEST_F(JsonTest, Model) {
       })#"));
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
             "add_features_to_arguments": [
@@ -2530,8 +2594,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */ {},
           /* sinks */ {},
@@ -2549,8 +2614,9 @@ TEST_F(JsonTest, Model) {
           Model(
               method,
               context,
-              Model::Mode::Normal,
-              /* frozen */ Model::FreezeKind::None,
+              {},
+              /* frozen */ {},
+              /* config_overrides */ {},
               /* generations */ {},
               /* parameter_sources */ {},
               /* sinks */ {},
@@ -2575,7 +2641,7 @@ TEST_F(JsonTest, Model) {
       })#"));
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
             "inline_as_getter": "Argument(1).foo"
@@ -2584,8 +2650,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */ {},
           /* sinks */ {},
@@ -2604,8 +2671,9 @@ TEST_F(JsonTest, Model) {
       test::sorted_json(Model(
                             method,
                             context,
-                            Model::Mode::Normal,
-                            /* frozen */ Model::FreezeKind::None,
+                            {},
+                            /* frozen */ {},
+                            /* config_overrides */ {},
                             /* generations */ {},
                             /* parameter_sources */ {},
                             /* sinks */ {},
@@ -2627,7 +2695,7 @@ TEST_F(JsonTest, Model) {
       })#"));
 
   EXPECT_EQ(
-      Model::from_json(
+      Model::from_config_json(
           method,
           test::parse_json(R"#({
             "inline_as_setter": {
@@ -2639,8 +2707,9 @@ TEST_F(JsonTest, Model) {
       Model(
           method,
           context,
-          Model::Mode::Normal,
-          /* frozen */ Model::FreezeKind::None,
+          {},
+          /* frozen */ {},
+          /* config_overrides */ {},
           /* generations */ {},
           /* parameter_sources */ {},
           /* sinks */ {},
@@ -2663,8 +2732,9 @@ TEST_F(JsonTest, Model) {
           Model(
               method,
               context,
-              Model::Mode::Normal,
-              /* frozen */ Model::FreezeKind::None,
+              {},
+              /* frozen */ {},
+              /* config_overrides */ {},
               /* generations */ {},
               /* parameter_sources */ {},
               /* sinks */ {},
@@ -2693,15 +2763,100 @@ TEST_F(JsonTest, Model) {
         }
       })#"));
 
+  // Parse config_overrides
+  EXPECT_EQ(
+      Model::from_config_json(
+          method,
+          test::parse_json(R"#({
+          "sinks": [
+              {
+                "kind": "first_sink",
+                "port": "Argument(2)"
+              }
+            ],
+          "global_config_overrides": {
+            "max_model_width": 10,
+            "max_model_height": 5
+          }
+          })#"),
+          context),
+      Model(
+          method,
+          context,
+          {},
+          /* frozen */ {},
+          /* config_overrides */
+          TaintTreeConfigurationOverrides{
+              {TaintTreeConfigurationOverrideOptions::MaxModelWidth, 10},
+              {TaintTreeConfigurationOverrideOptions::MaxModelHeight, 5}},
+          /* generations */ {},
+          /* parameter_sources */ {},
+          /* sinks */
+          {
+              {AccessPath(Root(Root::Kind::Argument, 2)),
+               test::make_leaf_taint_config(
+                   context.kind_factory->get("first_sink"))},
+          }));
+
+  EXPECT_EQ(
+      test::sorted_json(
+          Model(
+              method,
+              context,
+              {},
+              /* frozen */ {},
+              /* config_overrides */
+              TaintTreeConfigurationOverrides{
+                  {TaintTreeConfigurationOverrideOptions::MaxModelWidth, 10},
+                  {TaintTreeConfigurationOverrideOptions::MaxModelHeight, 5}},
+              /* generations */ {},
+              /* parameter_sources */ {},
+              /* sinks */
+              {
+                  {AccessPath(Root(Root::Kind::Argument, 2)),
+                   test::make_leaf_taint_config(
+                       context.kind_factory->get("first_sink"))},
+              })
+              .to_json(ExportOriginsMode::OnlyOnOrigins)),
+      test::parse_json(R"#({
+        "method": "LData;.method:(LData;LData;)V",
+        "sinks": [
+          {
+            "port": "Argument(2)",
+            "taint": [
+              {
+                "call_info": { "call_kind": "Declaration" },
+                "kinds": [
+                  {
+                    "kind": "first_sink"
+                  }
+                ]
+              }
+            ],
+            "config_overrides": {
+              "max_model_width": 10,
+              "max_model_height": 5
+            }
+          },
+        ],
+        "global_config_overrides": {
+          "max_model_width": 10,
+          "max_model_height": 5
+        }
+      })#"));
+
   // We do not parse issues for now.
   EXPECT_THROW(
-      Model::from_json(method, test::parse_json(R"({"issues": 1})"), context),
+      Model::from_config_json(
+          method, test::parse_json(R"({"issues": 1})"), context),
       JsonValidationError);
   EXPECT_THROW(
-      Model::from_json(method, test::parse_json(R"({"issues": {}})"), context),
+      Model::from_config_json(
+          method, test::parse_json(R"({"issues": {}})"), context),
       JsonValidationError);
   EXPECT_THROW(
-      Model::from_json(method, test::parse_json(R"({"issues": []})"), context),
+      Model::from_config_json(
+          method, test::parse_json(R"({"issues": []})"), context),
       JsonValidationError);
 
   auto rule = std::make_unique<SourceSinkRule>(
@@ -2716,8 +2871,9 @@ TEST_F(JsonTest, Model) {
           Model(
               method,
               context,
-              Model::Mode::Normal,
-              /* frozen */ Model::FreezeKind::None,
+              {},
+              /* frozen */ {},
+              /* config_overrides */ {},
               /* generations */
               std::vector<std::pair<AccessPath, TaintConfig>>{},
               /* parameter_sources */ {},
@@ -2756,12 +2912,14 @@ TEST_F(JsonTest, Model) {
         "sink_index" : "1",
           "sources": [
             {
-              "kinds": [ {"call_info": "Declaration", "kind": "first_source"} ]
+              "call_info": { "call_kind": "Declaration" },
+              "kinds": [ {"kind": "first_source"} ]
             }
           ],
           "sinks": [
             {
-              "kinds": [ {"call_info": "Declaration", "kind": "first_sink"} ]
+              "call_info": { "call_kind": "Declaration" },
+              "kinds": [ {"kind": "first_sink"} ]
             }
           ]
         }
@@ -2787,15 +2945,15 @@ TEST_F(JsonTest, FieldModel) {
   const auto* feature = context.feature_factory->get("test-feature");
 
   EXPECT_THROW(
-      FieldModel::from_json(field, test::parse_json(R"(1)"), context),
+      FieldModel::from_config_json(field, test::parse_json(R"(1)"), context),
       JsonValidationError);
   EXPECT_EQ(
-      FieldModel::from_json(field, test::parse_json(R"({})"), context),
+      FieldModel::from_config_json(field, test::parse_json(R"({})"), context),
       FieldModel(field));
 
   // Field taint frames must be leaf frames
   EXPECT_THROW(
-      FieldModel::from_json(
+      FieldModel::from_config_json(
           field,
           test::parse_json(R"("sources": [
             {"kind": "TestSource", "callee_port": "Return"},
@@ -2803,7 +2961,7 @@ TEST_F(JsonTest, FieldModel) {
           context),
       JsonValidationError);
   EXPECT_THROW(
-      FieldModel::from_json(
+      FieldModel::from_config_json(
           field,
           test::parse_json(R"("sinks": [
             {"kind": "TestSource", "callee": "LClass;.someMethod:()V"},
@@ -2813,7 +2971,7 @@ TEST_F(JsonTest, FieldModel) {
 
   // Test from_json
   EXPECT_EQ(
-      FieldModel::from_json(
+      FieldModel::from_config_json(
           field,
           test::parse_json(R"({"sources": [
             {"kind": "TestSource"},
@@ -2832,7 +2990,7 @@ TEST_F(JsonTest, FieldModel) {
                    .user_features = FeatureSet{feature}})},
           /* sinks */ {}));
   EXPECT_EQ(
-      FieldModel::from_json(
+      FieldModel::from_config_json(
           field,
           test::parse_json(R"({"sinks": [
             {"kind": "TestSink"},
@@ -2864,7 +3022,6 @@ TEST_F(JsonTest, FieldModel) {
         "sinks": [
           {
             "kind": "TestSink",
-            "call_info": "Declaration",
             "always_features": ["test-feature"],
             "origins": [{"field": "LBase;.field1:Ljava/lang/String;"}],
           }
@@ -2908,8 +3065,99 @@ TEST_F(JsonTest, LifecycleMethod) {
           /* base_class_name */ "Landroidx/fragment/app/FragmentActivity;",
           /* method_name */ "activity_lifecycle_wrapper",
           /* callees */
-          {LifecycleMethodCall("onCreate", "V", {"Landroid/os/Bundle;"}),
-           LifecycleMethodCall("onStart", "V", {})}));
+          std::vector<LifecycleMethodCall>{
+              {LifecycleMethodCall(
+                   "onCreate",
+                   "V",
+                   {"Landroid/os/Bundle;"},
+                   /* defined_in_derived_class */ std::nullopt),
+               LifecycleMethodCall(
+                   "onStart",
+                   "V",
+                   {},
+                   /* defined_in_derived_class */ std::nullopt)}}));
+
+  EXPECT_EQ(
+      LifecycleMethod::from_json(test::parse_json(R"({
+        "base_class_name": "Landroidx/fragment/app/FragmentActivity;",
+        "method_name": "activity_lifecycle_wrapper",
+        "callees": [
+          {
+            "method_name": "onCreate",
+            "return_type": "V",
+            "argument_types": [
+              "Landroid/os/Bundle;"
+            ]
+          },
+          {
+            "method_name": "afterOnStart",
+            "return_type": "V",
+            "argument_types": [],
+            "defined_in_derived_class": "CustomFragmentActivity",
+          }
+        ]
+      })")),
+      LifecycleMethod(
+          /* base_class_name */ "Landroidx/fragment/app/FragmentActivity;",
+          /* method_name */ "activity_lifecycle_wrapper",
+          /* callees */
+          std::vector<LifecycleMethodCall>{
+              {LifecycleMethodCall(
+                   "onCreate",
+                   "V",
+                   {"Landroid/os/Bundle;"},
+                   /* defined_in_derived_class */ std::nullopt),
+               LifecycleMethodCall(
+                   "afterOnStart",
+                   "V",
+                   {},
+                   /* defined_in_derived_class */ "CustomFragmentActivity")}}));
+
+  auto graph = LifeCycleMethodGraph{};
+  graph.add_node(
+      "entry",
+      std::vector<LifecycleMethodCall>{
+          {LifecycleMethodCall("onCreate", "V", {}, std::nullopt)}},
+      std::vector<std::string>{{"onStart"}});
+  graph.add_node(
+      "onStart",
+      std::vector<LifecycleMethodCall>{
+          {LifecycleMethodCall("onStart", "V", {}, std::nullopt)}},
+      std::vector<std::string>{{"onResume"}});
+  graph.add_node(
+      "onResume",
+      std::vector<LifecycleMethodCall>{
+          {LifecycleMethodCall("onResume", "V", {}, std::nullopt)}},
+      std::vector<std::string>{});
+  EXPECT_EQ(
+      LifecycleMethod::from_json(test::parse_json(R"({
+        "base_class_name": "Landroidx/fragment/app/FragmentActivity;",
+        "method_name": "activity_lifecycle_wrapper",
+        "control_flow_graph": {
+          "entry": {
+              "instructions": [
+                { "method_name": "onCreate", "return_type": "V" }
+              ],
+              "successors": ["onStart"]
+          },
+          "onStart": {
+            "instructions": [
+                { "method_name": "onStart", "return_type": "V" }
+              ],
+              "successors": ["onResume"]
+          },
+          "onResume": {
+            "instructions": [
+                { "method_name": "onResume", "return_type": "V" }
+              ],
+              "successors": []
+          }
+        }
+      })")),
+      LifecycleMethod(
+          /* base_class_name */ "Landroidx/fragment/app/FragmentActivity;",
+          /* method_name */ "activity_lifecycle_wrapper",
+          /* body */ graph));
 }
 
 TEST_F(JsonTest, LifecycleMethods) {
@@ -2989,7 +3237,8 @@ TEST_F(JsonTest, CallEffectModel) {
   effect_source_model.add_call_effect_source(
       AccessPath(Root(Root::Kind::CallEffectCallChain)),
       test::make_leaf_taint_config(
-          context.kind_factory->get("CallChainOrigin")));
+          context.kind_factory->get("CallChainOrigin")),
+      *context.heuristics);
 
   EXPECT_EQ(
       test::sorted_json(effect_source_model.to_json(ExportOriginsMode::Always)),
@@ -2999,9 +3248,11 @@ TEST_F(JsonTest, CallEffectModel) {
           "port": "call-chain",
           "taint": [
             {
+              "call_info": {
+                "call_kind": "Declaration"
+              },
               "kinds": [
                 {
-                  "call_info": "Declaration",
                   "kind": "CallChainOrigin",
                   "origins": [{"method": "LEntry;.method:()V", "port": "call-chain"}],
                 }
@@ -3016,7 +3267,8 @@ TEST_F(JsonTest, CallEffectModel) {
   Model effect_sink_model(exit_method, context);
   effect_sink_model.add_call_effect_sink(
       AccessPath(Root(Root::Kind::CallEffectCallChain)),
-      test::make_leaf_taint_config(context.kind_factory->get("CallChainSink")));
+      test::make_leaf_taint_config(context.kind_factory->get("CallChainSink")),
+      *context.heuristics);
   EXPECT_EQ(
       test::sorted_json(effect_sink_model.to_json(ExportOriginsMode::Always)),
       test::parse_json(R"#({
@@ -3025,9 +3277,11 @@ TEST_F(JsonTest, CallEffectModel) {
           "port": "call-chain",
           "taint": [
             {
+              "call_info": {
+                "call_kind": "Declaration"
+              },
               "kinds": [
                 {
-                  "call_info": "Declaration",
                   "kind": "CallChainSink",
                   "origins": [{"method": "LExit;.method:()V", "port": "call-chain"}],
                 }
@@ -3059,8 +3313,9 @@ TEST_F(JsonTest, CallEffectModel) {
           Model(
               entry_method,
               context,
-              Model::Mode::Normal,
-              /* frozen */ Model::FreezeKind::None,
+              {},
+              /* frozen */ {},
+              /* config_overrides */ {},
               /* generations */
               std::vector<std::pair<AccessPath, TaintConfig>>{},
               /* parameter_sources */ {},
@@ -3095,9 +3350,11 @@ TEST_F(JsonTest, CallEffectModel) {
           "sink_index" : "0",
           "sinks": [
             {
+              "call_info": {
+                "call_kind": "Declaration"
+              },
               "kinds": [
                 {
-                  "call_info": "Declaration",
                   "kind": "CallChainSink",
                   "origins": [{"method": "LExit;.method:()V", "port": "call-chain"}],
                 }
@@ -3106,9 +3363,11 @@ TEST_F(JsonTest, CallEffectModel) {
           ],
           "sources": [
             {
+              "call_info": {
+                "call_kind": "Declaration"
+              },
               "kinds": [
                 {
-                  "call_info": "Declaration",
                   "kind": "CallChainOrigin",
                   "origins": [{"method": "LEntry;.method:()V", "port": "call-chain"}],
                 }
@@ -3119,6 +3378,132 @@ TEST_F(JsonTest, CallEffectModel) {
       ],
       "method": "LEntry;.method:()V"
     })#"));
+}
+
+TEST_F(JsonTest, ExtraTraceTest) {
+  Scope scope;
+  DexStore store("stores");
+  store.add_classes(scope);
+  auto context = test::make_context(store);
+
+  const auto* kind = context.kind_factory->get("TestKind");
+  const auto* callee = context.methods->create(
+      redex::create_void_method(scope, "LClass;", "one"));
+  mt_assert(callee != nullptr);
+  const auto* call_position = context.positions->get("ExtraTrace.java", 1);
+  const auto* callee_port = context.access_path_factory->get(
+      AccessPath(Root(Root::Kind::Argument, 0)));
+
+  // extra-trace for propagation-with-trace
+  EXPECT_JSON_EQ(
+      ExtraTrace,
+      R"#({
+                  "call_info" :
+                  {
+                    "call_kind" : "PropagationWithTrace:CallSite",
+                    "port" : "Argument(0)",
+                    "position" : {
+                        "line" : 1, "path" : "ExtraTrace.java"
+                    },
+                    "resolves_to" : "LClass;.one:()V"
+                  },
+                  "frame_type" : "sink",
+                  "kind" : "TestKind"
+      })#",
+      ExtraTrace(
+          kind,
+          callee,
+          call_position,
+          callee_port,
+          CallKind::propagation_with_trace(CallKind::callsite().encode()),
+          FrameType::sink()),
+      context);
+
+  // extra-trace for call-site of a source trace
+  EXPECT_JSON_EQ(
+      ExtraTrace,
+      R"#({
+                  "call_info" :
+                  {
+                    "call_kind" : "CallSite",
+                    "port" : "Argument(0)",
+                    "position" : {
+                        "line" : 1, "path" : "ExtraTrace.java"
+                    },
+                    "resolves_to" : "LClass;.one:()V"
+                  },
+                  "frame_type" : "source",
+                  "kind" : "TestKind"
+      })#",
+      ExtraTrace(
+          kind,
+          callee,
+          call_position,
+          callee_port,
+          CallKind::callsite(),
+          FrameType::source()),
+      context);
+
+  // extra-trace for a origin of a sink trace
+  EXPECT_JSON_EQ(
+      ExtraTrace,
+      R"#({
+                  "call_info" :
+                  {
+                    "call_kind" : "Origin",
+                    "port" : "Argument(0)",
+                    "position" : {
+                        "line" : 1, "path" : "ExtraTrace.java"
+                    }
+                  },
+                  "frame_type" : "sink",
+                  "kind" : "TestKind"
+      })#",
+      ExtraTrace(
+          kind,
+          /* callee */ nullptr,
+          call_position,
+          callee_port,
+          CallKind::origin(),
+          FrameType::sink()),
+      context);
+
+  // extra-trace json without frame_type
+  EXPECT_THROW(
+      ExtraTrace::from_json(
+          test::parse_json(R"#({
+                  "call_info" :
+                  {
+                    "call_kind" : "CallSite",
+                    "port" : "Argument(0)",
+                    "position" : {
+                        "line" : 1, "path" : "ExtraTrace.java"
+                    },
+                    "resolves_to" : "LClass;.one:()V"
+                  },
+                  "kind" : "TestKind"
+      })#"),
+          context),
+      JsonValidationError);
+
+  // propagation-with-trace cannot have frame type source
+  EXPECT_THROW(
+      ExtraTrace::from_json(
+          test::parse_json(R"#({
+                  "call_info" :
+                  {
+                    "call_kind" : "PropagationWithTrace:CallSite",
+                    "port" : "Argument(0)",
+                    "position" : {
+                        "line" : 1, "path" : "ExtraTrace.java"
+                    },
+                    "resolves_to" : "LClass;.one:()V"
+                  },
+                  "frame_type" : "source",
+                  "kind" : "TestKind"
+      })#"),
+          context),
+      boost::exception_detail::error_info_injector<RedexException>);
 }
 
 } // namespace marianatrench

@@ -72,8 +72,9 @@ class MockAndroidResources : public AndroidResources {
   void collect_layout_classes_and_attributes_for_file(
       const std::string&,
       const std::unordered_set<std::string>&,
-      std::unordered_set<std::string>*,
-      std::unordered_multimap<std::string, std::string>*) override {}
+      resources::StringOrReferenceSet*,
+      std::unordered_multimap<std::string, resources::StringOrReference>*)
+      override {}
 
   size_t remap_xml_reference_attributes(
       const std::string&,
@@ -86,6 +87,10 @@ class MockAndroidResources : public AndroidResources {
   }
 
   std::unordered_set<std::string> find_all_xml_files() override {
+    return {};
+  }
+
+  std::unordered_set<std::string> get_service_loader_classes() override {
     return {};
   }
 
@@ -166,10 +171,10 @@ TEST_F(ClassPropertiesTest, InvokeUtil) {
   std::unordered_set<const Kind*> kind_set = {
       context.kind_factory->get("ActivityUserInput")};
   EXPECT_EQ(
-      class_properties.issue_features(activity, kind_set),
+      class_properties.issue_features(activity, kind_set, *context.heuristics),
       FeatureMayAlwaysSet({via_caller_exported}));
   EXPECT_EQ(
-      class_properties.issue_features(util, kind_set),
+      class_properties.issue_features(util, kind_set, *context.heuristics),
       FeatureMayAlwaysSet(
           {via_dependency_graph, via_caller_exported, via_class}));
 }
@@ -227,17 +232,19 @@ TEST_F(ClassPropertiesTest, MultipleCallers) {
   std::unordered_set<const Kind*> kind_set = {
       context.kind_factory->get("ActivityUserInput")};
   EXPECT_EQ(
-      class_properties.issue_features(main_activity, kind_set),
+      class_properties.issue_features(
+          main_activity, kind_set, *context.heuristics),
       FeatureMayAlwaysSet({via_caller_exported}));
   EXPECT_EQ(
-      class_properties.issue_features(parent_activity, kind_set),
+      class_properties.issue_features(
+          parent_activity, kind_set, *context.heuristics),
       FeatureMayAlwaysSet({via_caller_unexported}));
   EXPECT_EQ(
-      class_properties.issue_features(util, kind_set),
+      class_properties.issue_features(util, kind_set, *context.heuristics),
       FeatureMayAlwaysSet(
           {via_dependency_graph, via_caller_exported, via_class}));
   EXPECT_EQ(
-      class_properties.issue_features(other, kind_set),
+      class_properties.issue_features(other, kind_set, *context.heuristics),
       FeatureMayAlwaysSet({}));
 }
 
@@ -295,18 +302,21 @@ TEST_F(ClassPropertiesTest, MultipleCallersMultipleHops) {
   std::unordered_set<const Kind*> kind_set = {
       context.kind_factory->get("ActivityUserInput")};
   EXPECT_EQ(
-      class_properties.issue_features(main_activity, kind_set),
+      class_properties.issue_features(
+          main_activity, kind_set, *context.heuristics),
       FeatureMayAlwaysSet({via_caller_exported}));
   EXPECT_EQ(
-      class_properties.issue_features(util, kind_set),
+      class_properties.issue_features(util, kind_set, *context.heuristics),
       FeatureMayAlwaysSet(
           {via_dependency_graph, via_caller_exported, via_class}));
   EXPECT_EQ(
-      class_properties.issue_features(util_inner, kind_set),
+      class_properties.issue_features(
+          util_inner, kind_set, *context.heuristics),
       FeatureMayAlwaysSet(
           {via_dependency_graph, via_caller_exported, via_class}));
   EXPECT_EQ(
-      class_properties.issue_features(parent_activity, kind_set),
+      class_properties.issue_features(
+          parent_activity, kind_set, *context.heuristics),
       FeatureMayAlwaysSet({via_caller_unexported}));
 }
 
@@ -353,14 +363,16 @@ TEST_F(ClassPropertiesTest, UnexportedHop) {
   std::unordered_set<const Kind*> kind_set = {
       context.kind_factory->get("ActivityUserInput")};
   EXPECT_EQ(
-      class_properties.issue_features(main_activity, kind_set),
+      class_properties.issue_features(
+          main_activity, kind_set, *context.heuristics),
       FeatureMayAlwaysSet({via_caller_exported}));
   EXPECT_EQ(
-      class_properties.issue_features(parent_activity, kind_set),
+      class_properties.issue_features(
+          parent_activity, kind_set, *context.heuristics),
       FeatureMayAlwaysSet({via_caller_unexported}));
   // Stop traversal at unexported as it may introduce FPs.
   EXPECT_EQ(
-      class_properties.issue_features(util, kind_set),
+      class_properties.issue_features(util, kind_set, *context.heuristics),
       FeatureMayAlwaysSet(
           {via_dependency_graph, via_caller_unexported, via_class}));
 }
@@ -422,18 +434,19 @@ TEST_F(ClassPropertiesTest, Cyclic) {
   std::unordered_set<const Kind*> kind_set = {
       context.kind_factory->get("ActivityUserInput")};
   EXPECT_EQ(
-      class_properties.issue_features(main_activity, kind_set),
+      class_properties.issue_features(
+          main_activity, kind_set, *context.heuristics),
       FeatureMayAlwaysSet({via_caller_exported}));
   EXPECT_EQ(
-      class_properties.issue_features(activity1, kind_set),
+      class_properties.issue_features(activity1, kind_set, *context.heuristics),
       FeatureMayAlwaysSet(
           {via_dependency_graph, via_caller_exported, via_class}));
   EXPECT_EQ(
-      class_properties.issue_features(activity2, kind_set),
+      class_properties.issue_features(activity2, kind_set, *context.heuristics),
       FeatureMayAlwaysSet(
           {via_dependency_graph, via_caller_exported, via_class}));
   EXPECT_EQ(
-      class_properties.issue_features(util, kind_set),
+      class_properties.issue_features(util, kind_set, *context.heuristics),
       FeatureMayAlwaysSet(
           {via_dependency_graph, via_caller_exported, via_class}));
 }
@@ -469,10 +482,10 @@ TEST_F(ClassPropertiesTest, NestedClass) {
   std::unordered_set<const Kind*> kind_set = {
       context.kind_factory->get("ActivityUserInput")};
   EXPECT_EQ(
-      class_properties.issue_features(activity, kind_set),
+      class_properties.issue_features(activity, kind_set, *context.heuristics),
       FeatureMayAlwaysSet({via_caller_exported}));
   EXPECT_EQ(
-      class_properties.issue_features(util, kind_set),
+      class_properties.issue_features(util, kind_set, *context.heuristics),
       FeatureMayAlwaysSet(
           {via_dependency_graph, via_caller_exported, via_nested_class}));
 }

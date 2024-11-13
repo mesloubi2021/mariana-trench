@@ -11,6 +11,7 @@
 
 #include <mariana-trench/EventLogger.h>
 #include <mariana-trench/IntentRoutingAnalyzer.h>
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/Options.h>
 #include <mariana-trench/shim-generator/ShimGeneration.h>
 #include <mariana-trench/shim-generator/ShimGenerator.h>
@@ -26,6 +27,8 @@ std::vector<ShimGenerator> get_shim_generators(
 
   for (const auto& shim_definition :
        JsonValidation::null_or_array(shim_definitions)) {
+    JsonValidation::check_unexpected_members(
+        shim_definition, {"find", "where", "shim"});
     std::string find_name = JsonValidation::string(shim_definition, "find");
     if (find_name == "methods") {
       std::vector<std::unique_ptr<MethodConstraint>> shim_constraints;
@@ -58,14 +61,13 @@ ShimGeneratorError::ShimGeneratorError(const std::string& message)
 
 Shims ShimGeneration::run(
     Context& context,
-    const IntentRoutingAnalyzer& intent_routing_analyzer,
     const MethodMappings& method_mappings) {
   std::vector<ShimGenerator> all_shims;
   for (const auto& path : context.options->shims_paths()) {
     LOG(1, "Processing shim generator at: {}", path);
     try {
       auto shim_generators =
-          get_shim_generators(context, JsonValidation::parse_json_file(path));
+          get_shim_generators(context, JsonReader::parse_json_file(path));
 
       all_shims.insert(
           all_shims.end(),
@@ -80,26 +82,14 @@ Shims ShimGeneration::run(
   }
 
   // Run the shim generator
-  Shims method_shims(all_shims.size(), intent_routing_analyzer);
+  Shims method_shims(all_shims.size());
   std::size_t iteration = 0;
 
   for (auto& item : all_shims) {
     LOG(1, "Running shim generator ({}/{})", ++iteration, all_shims.size());
 
-    auto duplicate_shims = item.emit_method_shims(
+    item.emit_method_shims(
         method_shims, context.methods.get(), method_mappings);
-
-    if (!duplicate_shims.empty()) {
-      std::vector<std::string> errors{};
-      std::transform(
-          duplicate_shims.cbegin(),
-          duplicate_shims.cend(),
-          std::back_inserter(errors),
-          [](const auto& shim) { return shim.method()->show(); });
-
-      throw ShimGeneratorError(fmt::format(
-          "Duplicate shim defined for: {}", boost::join(errors, ", ")));
-    }
   }
 
   return method_shims;

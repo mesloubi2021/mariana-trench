@@ -12,6 +12,7 @@
 #include <mariana-trench/Feature.h>
 #include <mariana-trench/IncludeMacros.h>
 #include <mariana-trench/Method.h>
+#include <mariana-trench/Origin.h>
 #include <mariana-trench/UniquePointerFactory.h>
 
 namespace marianatrench {
@@ -24,10 +25,16 @@ class FeatureFactory final {
 
   const Feature* get(const std::string& data) const;
 
-  const Feature* get_via_type_of_feature(const DexType* MT_NULLABLE type) const;
+  const Feature* get_via_type_of_feature(
+      const DexType* MT_NULLABLE type,
+      const DexString* MT_NULLABLE tag) const;
   const Feature* get_via_cast_feature(const DexType* MT_NULLABLE type) const;
   const Feature* get_via_value_of_feature(
-      const std::optional<std::string_view>& value) const;
+      const std::optional<std::string_view>& value,
+      const DexString* MT_NULLABLE tag) const;
+  const Feature* get_via_annotation_feature(
+      std::string_view value,
+      const DexString* MT_NULLABLE tag) const;
   const Feature* get_via_shim_feature(const Method* MT_NULLABLE method) const;
 
   /**
@@ -56,6 +63,18 @@ class FeatureFactory final {
    * the analysis inferred taint on an undefined field.
    */
   const Feature* get_invalid_path_broadening() const;
+
+  /**
+   * This feature is added to propagations which are created on methods that
+   * are not concrete or external/from jars. These methods do not have an
+   * underlying DexMethod*.
+   */
+  const Feature* get_missing_method() const;
+
+  const Feature* get_exploitability_root() const;
+
+  const Feature* get_exploitability_origin_feature(
+      const ExploitabilityOrigin* exploitability_origin) const;
 
   static const FeatureFactory& singleton();
 

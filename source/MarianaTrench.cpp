@@ -15,6 +15,7 @@
 #include <RedexContext.h>
 
 #include <mariana-trench/ArtificialMethods.h>
+#include <mariana-trench/CachedModelsContext.h>
 #include <mariana-trench/ClassHierarchies.h>
 #include <mariana-trench/ClassIntervals.h>
 #include <mariana-trench/ClassProperties.h>
@@ -26,7 +27,7 @@
 #include <mariana-trench/Fields.h>
 #include <mariana-trench/Highlights.h>
 #include <mariana-trench/Interprocedural.h>
-#include <mariana-trench/JsonValidation.h>
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/Kind.h>
 #include <mariana-trench/LifecycleMethods.h>
 #include <mariana-trench/Log.h>
@@ -59,11 +60,6 @@ MarianaTrench::MarianaTrench()
 
 namespace program_options = boost::program_options;
 
-void MarianaTrench::add_options(
-    program_options::options_description& options) const {
-  Options::add_options(options);
-}
-
 Registry MarianaTrench::analyze(Context& context) {
   context.artificial_methods = std::make_unique<ArtificialMethods>(
       *context.kind_factory, context.stores);
@@ -77,7 +73,7 @@ Registry MarianaTrench::analyze(Context& context) {
     }
     auto methods_path = context.options->methods_output_path();
     LOG(1, "Writing methods to `{}`.", methods_path.native());
-    JsonValidation::write_json_file(methods_path, method_list);
+    JsonWriter::write_json_file(methods_path, method_list);
   }
   LOG(1,
       "Stored all methods in {:.2f}s. Memory used, RSS: {:.2f}GB",
@@ -122,10 +118,20 @@ Registry MarianaTrench::analyze(Context& context) {
       types_timer.duration_in_seconds(),
       resident_set_size_in_gb());
 
+  Timer cached_models_context_timer;
+  LOG(1, "Loading cached models...");
+  CachedModelsContext cached_models_context(context, *context.options);
+  context.statistics->log_time(
+      "cached_models_context_init", cached_models_context_timer);
+  LOG(1,
+      "Loaded models from input directory in {:.2f}s. Memory used, RSS: {:.2f}GB",
+      cached_models_context_timer.duration_in_seconds(),
+      resident_set_size_in_gb());
+
   Timer class_hierarchies_timer;
   LOG(1, "Building class hierarchies...");
-  context.class_hierarchies =
-      std::make_unique<ClassHierarchies>(*context.options, context.stores);
+  context.class_hierarchies = std::make_unique<ClassHierarchies>(
+      *context.options, context.stores, cached_models_context);
   context.statistics->log_time("class_hierarchies", class_hierarchies_timer);
   LOG(1,
       "Built class hierarchies in {:.2f}s. Memory used, RSS: {:.2f}GB",
@@ -142,20 +148,13 @@ Registry MarianaTrench::analyze(Context& context) {
       field_cache_timer.duration_in_seconds(),
       resident_set_size_in_gb());
 
-  Timer lifecycle_methods_timer;
-  LOG(1, "Creating life-cycle wrapper methods...");
-  LifecycleMethods::run(
-      *context.options, *context.class_hierarchies, *context.methods);
-  context.statistics->log_time("lifecycle_methods", lifecycle_methods_timer);
-  LOG(1,
-      "Created lifecycle methods in {:.2f}s. Memory used, RSS: {:.2f}GB",
-      lifecycle_methods_timer.duration_in_seconds(),
-      resident_set_size_in_gb());
-
   Timer overrides_timer;
   LOG(1, "Building override graph...");
   context.overrides = std::make_unique<Overrides>(
-      *context.options, *context.methods, context.stores);
+      *context.options,
+      *context.methods,
+      context.stores,
+      cached_models_context);
   context.statistics->log_time("overrides", overrides_timer);
   LOG(1,
       "Built override graph in {:.2f}s. Memory used, RSS: {:.2f}GB",
@@ -175,9 +174,21 @@ Registry MarianaTrench::analyze(Context& context) {
   std::vector<Model> generated_models;
   std::vector<FieldModel> generated_field_models;
 
-  // Scope for MethodMappings, Shims and IntentRoutingAnalyzer as they are only
-  // used for shim and model generation steps.
+  // Scope for LifecycleMethods, MethodMappings, Shims and IntentRoutingAnalyzer
+  // as they are only used for callgraph construction, shim and model generation
+  // steps.
   {
+    Timer lifecycle_methods_timer;
+    LOG(1, "Creating life-cycle wrapper methods...");
+    auto lifecycle_methods = LifecycleMethods::run(
+        *context.options, *context.class_hierarchies, *context.methods);
+    context.statistics->log_time("lifecycle_methods", lifecycle_methods_timer);
+
+    LOG(1,
+        "Created lifecycle methods in {:.2f}s. Memory used, RSS: {:.2f}GB",
+        lifecycle_methods_timer.duration_in_seconds(),
+        resident_set_size_in_gb());
+
     Timer method_mapping_timer;
     LOG(1,
         "Building method mappings for shim/model generation over {} methods",
@@ -189,34 +200,39 @@ Registry MarianaTrench::analyze(Context& context) {
         method_mapping_timer.duration_in_seconds(),
         resident_set_size_in_gb());
 
-    Timer intent_routing_analyzer_timer;
-    LOG(1, "Running intent routing analyzer...");
-    auto intent_routing_analyzer = IntentRoutingAnalyzer::run(context);
-    LOG(1,
-        "Created intent routing analyzer in {:.2f}s. Memory used, RSS: {:.2f}MB",
-        intent_routing_analyzer_timer.duration_in_seconds(),
-        resident_set_size_in_gb());
-
     Timer shims_timer;
-    LOG(1, "Creating Shims...");
-    Shims shims =
-        ShimGeneration::run(context, intent_routing_analyzer, method_mappings);
+    LOG(1, "Creating user defined shims...");
+    Shims shims = ShimGeneration::run(context, method_mappings);
     LOG(1,
         "Created Shims in {:.2f}s. Memory used, RSS: {:.2f}GB",
         shims_timer.duration_in_seconds(),
         resident_set_size_in_gb());
 
+    if (context.options->enable_cross_component_analysis()) {
+      Timer intent_routing_analyzer_timer;
+      LOG(1, "Running intent routing analyzer...");
+      auto intent_routing_analyzer = IntentRoutingAnalyzer::run(
+          *context.methods, *context.types, *context.options);
+      LOG(1,
+          "Created intent routing analyzer in {:.2f}s. Memory used, RSS: {:.2f}MB",
+          intent_routing_analyzer_timer.duration_in_seconds(),
+          resident_set_size_in_gb());
+      shims.add_intent_routing_analyzer(std::move(intent_routing_analyzer));
+    }
+
     Timer call_graph_timer;
     LOG(1, "Building call graph...");
     context.call_graph = std::make_unique<CallGraph>(
         *context.options,
-        *context.methods,
-        *context.fields,
         *context.types,
         *context.class_hierarchies,
-        *context.overrides,
-        *context.feature_factory,
+        lifecycle_methods,
         shims,
+        *context.feature_factory,
+        *context.heuristics,
+        *context.methods,
+        *context.fields,
+        *context.overrides,
         method_mappings);
     context.statistics->log_time("call_graph", call_graph_timer);
     LOG(1,
@@ -226,8 +242,8 @@ Registry MarianaTrench::analyze(Context& context) {
 
     Timer generation_timer;
     LOG(1, "Generating models...");
-    auto model_generator_result =
-        ModelGeneration::run(context, method_mappings);
+    auto model_generator_result = ModelGeneration::run(
+        context, cached_models_context.models(), method_mappings);
     generated_models = model_generator_result.method_models;
     generated_field_models = model_generator_result.field_models;
     context.statistics->log_time("models_generation", generation_timer);
@@ -253,7 +269,11 @@ Registry MarianaTrench::analyze(Context& context) {
   Timer registry_timer;
   LOG(1, "Initializing models...");
   auto registry = Registry::load(
-      context, *context.options, generated_models, generated_field_models);
+      context,
+      *context.options,
+      generated_models,
+      generated_field_models,
+      cached_models_context.models());
   context.statistics->log_time("registry_init", registry_timer);
   LOG(1,
       "Initialized {} models and {} field models in {:.2f}s. Memory used, RSS: {:.2f}GB",
@@ -261,6 +281,9 @@ Registry MarianaTrench::analyze(Context& context) {
       registry.field_models_size(),
       registry_timer.duration_in_seconds(),
       resident_set_size_in_gb());
+
+  // Cache is no longer used. Free up memory
+  cached_models_context.clear();
 
   Timer rules_timer;
   LOG(1, "Initializing rules...");
@@ -303,6 +326,7 @@ Registry MarianaTrench::analyze(Context& context) {
   LOG(1, "Building dependency graph...");
   context.dependencies = std::make_unique<Dependencies>(
       *context.options,
+      *context.heuristics,
       *context.methods,
       *context.overrides,
       *context.call_graph,
@@ -380,7 +404,7 @@ std::vector<std::string> filter_existing_jars(
   std::vector<std::string> results;
 
   for (const auto& system_jar_path : system_jar_paths) {
-    if (boost::filesystem::exists(system_jar_path)) {
+    if (std::filesystem::exists(system_jar_path)) {
       results.push_back(system_jar_path);
     } else {
       ERROR(1, "Unable to find system jar `{}`", system_jar_path);
@@ -394,9 +418,15 @@ std::vector<std::string> filter_existing_jars(
 
 void MarianaTrench::run(const program_options::variables_map& variables) {
   Context context;
+  std::filesystem::path json_file_path =
+      std::filesystem::path(variables["config"].as<std::string>());
 
-  context.options = std::make_unique<Options>(variables);
+  context.options = Options::from_json_file(json_file_path);
   const auto& options = *context.options;
+
+  if (auto heuristics_path = options.heuristics_path()) {
+    Heuristics::init_from_file(*heuristics_path);
+  }
 
   EventLogger::init_event_logger(context.options.get());
 
@@ -431,13 +461,43 @@ void MarianaTrench::run(const program_options::variables_map& variables) {
   Timer output_timer;
   auto models_path = options.models_output_path();
   LOG(1, "Writing models to `{}`.", models_path.native());
-  registry.dump_models(models_path);
+  registry.to_sharded_models_json(models_path);
   context.statistics->log_time("dump_models", output_timer);
   LOG(1, "Wrote models in {:.2f}s.", output_timer.duration_in_seconds());
+
+  if (options.dump_coverage_info()) {
+    Timer file_coverage_timer;
+    auto file_coverage_output_path = options.file_coverage_output_path();
+    LOG(1, "Writing file coverage info to `{}`.", file_coverage_output_path);
+    registry.dump_file_coverage_info(file_coverage_output_path);
+    context.statistics->log_time(
+        "dump_file_coverage_info", file_coverage_timer);
+    LOG(1,
+        "Wrote file coverage info in {:.2f}s.",
+        file_coverage_timer.duration_in_seconds());
+
+    Timer rule_coverage_timer;
+    auto rule_coverage_output_path = options.rule_coverage_output_path();
+    LOG(1, "Writing rule coverage info to `{}`.", rule_coverage_output_path);
+    registry.dump_rule_coverage_info(rule_coverage_output_path);
+    context.statistics->log_time(
+        "dump_rule_coverage_info", rule_coverage_timer);
+    LOG(1,
+        "Wrote rule coverage info in {:.2f}s.",
+        rule_coverage_timer.duration_in_seconds());
+  }
 
   auto metadata_path = options.metadata_output_path();
   LOG(1, "Writing metadata to `{}`.", metadata_path.native());
   registry.dump_metadata(/* path */ metadata_path);
+
+  if (options.verify_expected_output()) {
+    auto verification_output_path = options.verification_output_path();
+    LOG(1,
+        "Verifying expected output. Writing results to `{}`",
+        verification_output_path.native());
+    registry.verify_expected_output(verification_output_path);
+  }
 }
 
 } // namespace marianatrench

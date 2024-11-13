@@ -33,12 +33,13 @@ class IntentRoutingAnalyzer final {
   explicit IntentRoutingAnalyzer() = default;
 
  public:
-  static IntentRoutingAnalyzer run(const Context&);
+  static std::unique_ptr<IntentRoutingAnalyzer>
+  run(const Methods& methods, const Types& types, const Options& options);
 
   // Move constructor required for static run() method to return the object.
   MOVE_CONSTRUCTOR_ONLY(IntentRoutingAnalyzer);
 
-  std::vector<ShimTarget> get_intent_routing_targets(
+  InstantiatedShim::FlatSet<ShimTarget> get_intent_routing_targets(
       const Method* original_callee,
       const Method* caller) const;
 

@@ -13,6 +13,7 @@
 #include <boost/functional/hash.hpp>
 #include <json/json.h>
 
+#include <mariana-trench/Context.h>
 #include <mariana-trench/IncludeMacros.h>
 
 namespace marianatrench {
@@ -25,7 +26,8 @@ class ModelGeneratorName final {
  public:
   explicit ModelGeneratorName(
       std::string identifier,
-      std::optional<std::string> part);
+      std::optional<std::string> part,
+      bool is_sharded);
 
   INCLUDE_DEFAULT_COPY_CONSTRUCTORS_AND_ASSIGNMENTS(ModelGeneratorName)
 
@@ -39,6 +41,13 @@ class ModelGeneratorName final {
     return part_;
   }
 
+  bool is_sharded() const {
+    return is_sharded_;
+  }
+
+  static const ModelGeneratorName* from_json(
+      const Json::Value& value,
+      Context& context);
   Json::Value to_json() const;
 
  private:
@@ -50,6 +59,7 @@ class ModelGeneratorName final {
  private:
   std::string identifier_;
   std::optional<std::string> part_;
+  bool is_sharded_;
 };
 
 } // namespace marianatrench
@@ -62,6 +72,7 @@ struct std::hash<marianatrench::ModelGeneratorName> {
     if (name.part_) {
       boost::hash_combine(seed, *name.part_);
     }
+    boost::hash_combine(seed, name.is_sharded_);
     return seed;
   }
 };

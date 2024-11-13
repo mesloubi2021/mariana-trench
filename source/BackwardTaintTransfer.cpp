@@ -5,10 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <mariana-trench/AccessPathFactory.h>
 #include <mariana-trench/ArtificialMethods.h>
 #include <mariana-trench/BackwardTaintTransfer.h>
 #include <mariana-trench/CallGraph.h>
 #include <mariana-trench/FeatureFactory.h>
+#include <mariana-trench/FeatureMayAlwaysSet.h>
 #include <mariana-trench/Heuristics.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/OriginFactory.h>
@@ -37,7 +39,7 @@ bool BackwardTaintTransfer::analyze_check_cast(
   log_instruction(context, instruction);
   const auto& aliasing = context->aliasing.get(instruction);
 
-  auto taint = environment->read(aliasing.result_memory_location());
+  auto taint = environment->read(aliasing.result_memory_locations());
 
   // Add via-cast feature as configured by the program options.
   auto allowed_features = context->options.allow_via_cast_features();
@@ -52,12 +54,16 @@ bool BackwardTaintTransfer::analyze_check_cast(
     taint.add_locally_inferred_features(features);
   }
 
+  auto memory_locations =
+      aliasing.register_memory_locations(instruction->src(0));
   LOG_OR_DUMP(
-      context, 4, "Tainting register {} with {}", instruction->src(0), taint);
-  environment->write(
-      aliasing.register_memory_locations(instruction->src(0)),
-      std::move(taint),
-      UpdateKind::Strong);
+      context,
+      4,
+      "Tainting register {} at {} with {}",
+      instruction->src(0),
+      memory_locations,
+      taint);
+  environment->write(memory_locations, std::move(taint), UpdateKind::Weak);
 
   return false;
 }
@@ -154,10 +160,17 @@ void infer_input_taint(
       LOG_OR_DUMP(context, 4, "Inferred sink for port {}: {}", port, sinks);
       if (port.root().is_call_effect()) {
         context->new_model.add_inferred_call_effect_sinks(
-            std::move(port), std::move(sinks), widening_features);
+            std::move(port),
+            std::move(sinks),
+            widening_features,
+            context->heuristics);
       } else {
         context->new_model.add_inferred_sinks(
-            std::move(port), std::move(sinks), widening_features);
+            std::move(port),
+            std::move(sinks),
+            taint_tree.config_overrides(),
+            widening_features,
+            context->heuristics);
       }
     }
 
@@ -177,9 +190,21 @@ void infer_input_taint(
       auto& propagations = propagations_iterator->second;
 
       if (input_root.is_argument()) {
-        // Do not infer propagations Arg(i) -> Arg(i). (especially with x=0)
+        // Do not infer propagations Arg(i) -> Arg(i). (especially with i=0)
         propagations.filter_frames([input_root](const Frame& frame) {
-          auto* kind = frame.kind()->as<LocalArgumentKind>();
+          const Kind* base_kind = frame.kind();
+
+          // Also avoid inferring Arg(i) -> Sanitize[X]:LocalArgument(i)
+          if (const auto* transform_kind = frame.kind()->as<TransformKind>()) {
+            if (transform_kind->has_non_sanitize_transform()) {
+              // Non-sanitizing transforms (i.e. named transforms, or named
+              // transforms with sanitizers) will still be inferred
+              return true;
+            }
+            base_kind = transform_kind->base_kind();
+          }
+
+          const auto* kind = base_kind->as<LocalArgumentKind>();
           return kind == nullptr ||
               kind->parameter_position() != input_root.parameter_position();
         });
@@ -207,7 +232,13 @@ void infer_input_taint(
           port,
           propagations);
       context->new_model.add_inferred_propagations(
-          std::move(port), std::move(propagations), widening_features);
+          std::move(port),
+          std::move(propagations),
+          taint_tree.config_overrides(),
+          widening_features,
+          context->heuristics,
+          context->kind_factory,
+          context->transforms_factory);
     }
   }
 }
@@ -221,6 +252,7 @@ void taint_propagation_input(
     const IRInstruction* instruction,
     const CalleeModel& callee,
     const std::vector<std::optional<std::string>>& source_constant_arguments,
+    const AccessPath& output,
     const AccessPath& input,
     TaintTree input_taint_tree) {
   auto input_path_resolved = input.path().resolve(source_constant_arguments);
@@ -237,19 +269,26 @@ void taint_propagation_input(
     }
 
     auto input_register_id = instruction->src(input_parameter_position);
+    auto memory_locations =
+        aliasing.register_memory_locations(input_register_id);
     LOG_OR_DUMP(
         context,
         4,
-        "Tainting register {} path {} with {}",
+        "Tainting register {} at {} path {} with {}",
         input_register_id,
+        memory_locations,
         input_path_resolved,
         input_taint_tree);
     new_environment->write(
-        aliasing.register_memory_locations(input_register_id),
+        memory_locations,
         input_path_resolved,
         std::move(input_taint_tree),
-        callee.model.strong_write_on_propagation() ? UpdateKind::Strong
-                                                   : UpdateKind::Weak);
+        // We only want strong updates for Arg(x) -> Arg(x) propagations.
+        // See integration tests `propagation_via_arg` for an example.
+        callee.model.strong_write_on_propagation() &&
+                output.root() == input.root()
+            ? UpdateKind::Strong
+            : UpdateKind::Weak);
   } else {
     mt_assert(input.root().is_call_effect_for_local_propagation_input());
     auto call_effect_path = AccessPath(input.root(), input_path_resolved);
@@ -260,6 +299,30 @@ void taint_propagation_input(
         call_effect_path,
         input_taint_tree);
     infer_input_taint(context, std::move(call_effect_path), input_taint_tree);
+  }
+
+  if (callee.model.strong_write_on_propagation() &&
+      output.root().is_argument() && input.root() != output.root()) {
+    // If we want a strong write on the propagation, we should clear the taint
+    // on the output, similar to the behaviour of an iput instruction.
+    auto output_parameter_position = output.root().parameter_position();
+    auto output_register_id = instruction->src(output_parameter_position);
+    auto output_memory_locations =
+        aliasing.register_memory_locations(output_register_id);
+    if (auto* output_memory_location = output_memory_locations.singleton();
+        output_memory_location != nullptr) {
+      LOG_OR_DUMP(
+          context,
+          4,
+          "Clearing the taint for register {} path {}",
+          output_register_id,
+          output.path());
+      new_environment->write(
+          *output_memory_location,
+          output.path(),
+          TaintTree::bottom(),
+          UpdateKind::Strong);
+    }
   }
 }
 
@@ -275,11 +338,17 @@ void apply_propagation(
     const FeatureMayAlwaysSet& locally_inferred_features,
     const Position* position,
     const AccessPath& input,
-    const Frame& propagation) {
+    const CallInfo& propagation_call_info,
+    const Frame& propagation_frame) {
   LOG_OR_DUMP(
-      context, 4, "Processing propagation from {} to {}", input, propagation);
+      context,
+      4,
+      "Processing propagation from {} to {}",
+      input,
+      propagation_frame);
 
-  const PropagationKind* propagation_kind = propagation.propagation_kind();
+  const PropagationKind* propagation_kind =
+      propagation_frame.propagation_kind();
   auto output_root = propagation_kind->root();
 
   TaintTree output_taint_tree = TaintTree::bottom();
@@ -299,16 +368,25 @@ void apply_propagation(
       mt_unreachable();
   }
 
-  if (output_taint_tree.is_bottom()) {
+  if (output_taint_tree.is_bottom() &&
+      !callee.model.strong_write_on_propagation()) {
     return;
   }
 
   output_taint_tree = transforms::apply_propagation(
-      context, propagation, std::move(output_taint_tree));
+      context,
+      propagation_call_info,
+      propagation_frame,
+      std::move(output_taint_tree),
+      transforms::TransformDirection::Backward);
+
+  // Apply config overrides for the input root.
+  output_taint_tree.apply_config_overrides(
+      callee.model.propagations().config_overrides(input.root()));
 
   FeatureMayAlwaysSet features = FeatureMayAlwaysSet::make_always(
       callee.model.add_features_to_arguments(output_root));
-  features.add(propagation.features());
+  features.add(propagation_frame.features());
   features.add(locally_inferred_features);
   features.add_always(callee.model.add_features_to_arguments(input.root()));
 
@@ -316,7 +394,7 @@ void apply_propagation(
       features, position);
 
   for (const auto& [output_path, collapse_depth] :
-       propagation.output_paths().elements()) {
+       propagation_frame.output_paths().elements()) {
     auto output_path_resolved = output_path.resolve(source_constant_arguments);
 
     auto input_taint_tree = output_taint_tree.read(
@@ -363,6 +441,7 @@ void apply_propagation(
         instruction,
         callee,
         source_constant_arguments,
+        AccessPath(output_root, output_path_resolved),
         input,
         std::move(input_taint_tree));
   }
@@ -383,8 +462,9 @@ void apply_propagations(
       "Processing propagations for call to `{}`",
       show(callee.method_reference));
 
-  for (const auto& [input, propagations] :
-       callee.model.propagations().elements()) {
+  for (const auto& binding : callee.model.propagations().elements()) {
+    const AccessPath& input = binding.first;
+    const Taint& propagations = binding.second;
     LOG_OR_DUMP(context, 4, "Processing propagations from {}", input);
     if (!input.root().is_argument() &&
         !input.root().is_call_effect_for_local_propagation_input()) {
@@ -398,23 +478,35 @@ void apply_propagations(
 
     auto* position =
         context->positions.get(callee.position, input.root(), instruction);
-    for (const auto& propagation : propagations.frames_iterator()) {
-      auto locally_inferred_features =
-          propagations.locally_inferred_features(propagation.call_info());
-      apply_propagation(
-          context,
-          aliasing,
-          previous_environment,
-          new_environment,
-          instruction,
-          callee,
-          source_constant_arguments,
-          result_taint,
-          locally_inferred_features,
-          position,
-          input,
-          propagation);
-    }
+    propagations.visit_frames(
+        [context,
+         &aliasing,
+         previous_environment,
+         new_environment,
+         instruction,
+         &callee,
+         &source_constant_arguments,
+         &result_taint,
+         propagations,
+         &input,
+         position](const CallInfo& call_info, const Frame& propagation) {
+          auto locally_inferred_features =
+              propagations.locally_inferred_features(call_info);
+          apply_propagation(
+              context,
+              aliasing,
+              previous_environment,
+              new_environment,
+              instruction,
+              callee,
+              source_constant_arguments,
+              result_taint,
+              locally_inferred_features,
+              position,
+              input,
+              call_info,
+              propagation);
+        });
   }
 }
 
@@ -455,7 +547,7 @@ void check_call_flows(
     BackwardTaintEnvironment* environment,
     const std::function<std::optional<Register>(Root)>& get_register,
     const DexMethodRef* callee_method_reference,
-    const TaintAccessPathTree& sinks,
+    const TaintAccessPathTree& sinks_tree,
     const std::vector<std::optional<std::string>>& source_constant_arguments,
     const FeatureMayAlwaysSet& extra_features,
     const FulfilledPartialKindState& fulfilled_partial_sinks) {
@@ -465,7 +557,7 @@ void check_call_flows(
       "Processing sinks for call to `{}`",
       show(callee_method_reference));
 
-  for (const auto& [port, sinks] : sinks.elements()) {
+  for (const auto& [port, sinks] : sinks_tree.elements()) {
     auto register_id = get_register(port.root());
     if (!register_id) {
       continue;
@@ -474,7 +566,11 @@ void check_call_flows(
     auto path_resolved = port.path().resolve(source_constant_arguments);
 
     auto new_sinks = sinks;
+    // Collect all fulfilled sink features to add as locally inferred features
+    // so that they are discoverable on the current frame in the UI.
+    FeatureMayAlwaysSet locally_inferred_fulfilled_sink_features{};
     new_sinks.transform_kind_with_features(
+        /* transform_kind */
         [context, &fulfilled_partial_sinks](
             const Kind* sink_kind) -> std::vector<const Kind*> {
           const auto* partial_sink = sink_kind->as<PartialKind>();
@@ -485,22 +581,36 @@ void check_call_flows(
           return fulfilled_partial_sinks.make_triggered_counterparts(
               /* unfulfilled_kind */ partial_sink, context->kind_factory);
         },
-        [&fulfilled_partial_sinks](const Kind* new_kind) {
-          return get_fulfilled_sink_features(fulfilled_partial_sinks, new_kind);
+        /* add_features */
+        [&fulfilled_partial_sinks,
+         &locally_inferred_fulfilled_sink_features](const Kind* new_kind) {
+          auto fulfilled_sink_features =
+              get_fulfilled_sink_features(fulfilled_partial_sinks, new_kind);
+          locally_inferred_fulfilled_sink_features.add(fulfilled_sink_features);
+          return fulfilled_sink_features;
         });
-    new_sinks.add_locally_inferred_features(extra_features);
 
+    locally_inferred_fulfilled_sink_features.add(extra_features);
+    new_sinks.add_locally_inferred_features(
+        locally_inferred_fulfilled_sink_features);
+
+    // Apply config overrides
+    auto new_sink_tree =
+        TaintTree(new_sinks, sinks_tree.config_overrides(port.root()));
+
+    auto memory_locations = aliasing.register_memory_locations(*register_id);
     LOG_OR_DUMP(
         context,
         4,
-        "Tainting register {} path {} with {}",
+        "Tainting register {} at {} path {} with {}",
         *register_id,
+        memory_locations,
         path_resolved,
-        new_sinks);
+        new_sink_tree);
     environment->write(
-        aliasing.register_memory_locations(*register_id),
+        memory_locations,
         path_resolved,
-        std::move(new_sinks),
+        std::move(new_sink_tree),
         UpdateKind::Weak);
   }
 }
@@ -607,7 +717,7 @@ void check_flows_to_array_allocation(
       AccessPath(Root(Root::Kind::Argument, 0)));
   auto array_allocation_sink = Taint{TaintConfig(
       /* kind */ context->artificial_methods.array_allocation_kind(),
-      /* callee_port */ *port,
+      /* callee_port */ port,
       /* callee */ nullptr,
       /* call_kind */ CallKind::origin(),
       /* call_position */ position,
@@ -635,6 +745,73 @@ void check_flows_to_array_allocation(
         array_allocation_sink,
         UpdateKind::Weak);
   }
+}
+
+void infer_exploitability_sinks(
+    MethodContext* context,
+    const IRInstruction* instruction) {
+  auto source_as_transform_sinks =
+      context->partially_fulfilled_exploitability_state
+          .source_as_transform_sinks(instruction);
+  if (source_as_transform_sinks.is_bottom()) {
+    return;
+  }
+
+  LOG_OR_DUMP(
+      context,
+      4,
+      "Inferred source-as-transform sink {}",
+      source_as_transform_sinks);
+  context->new_model.add_inferred_call_effect_sinks(
+      AccessPath(Root(Root::Kind::CallEffectExploitability)),
+      std::move(source_as_transform_sinks),
+      context->heuristics);
+}
+
+void apply_call_effects(
+    MethodContext* context,
+    const IRInstruction* instruction,
+    const CalleeModel& callee) {
+  const auto& callee_call_effect_sinks = callee.model.call_effect_sinks();
+  for (const auto& [port, sinks] : callee_call_effect_sinks.elements()) {
+    switch (port.root().kind()) {
+      case Root::Kind::CallEffectCallChain: {
+        LOG_OR_DUMP(
+            context,
+            4,
+            "Add inferred call effect sinks {} for method: {}",
+            sinks,
+            show(context->method()));
+        context->new_model.add_inferred_call_effect_sinks(
+            port, sinks, context->heuristics);
+      } break;
+
+      case Root::Kind::CallEffectExploitability:
+        // A call-effect sink is always wrapped with source-as-transform
+        // transformation. This sink is inferred on the exploitability root
+        // based on the results of forward analysis.
+        // - Case 1: a new source-as-transform
+        // sink is materialized in the forward analysis iff an exploitability
+        // rule is only partially fulfilled.
+        // - Case 2: a source-as-transform sink on the
+        // callee's exploitability root is propagated to the caller iff an
+        // exploitability rule is only partially fulfilled. Although this case
+        // relies on the callee's call-effect sinks, we do not directly use it
+        // here. This is because the callee's model might have been updated
+        // between the forward and backwards analysis. Instead,
+        // we fully rely on the information passed from the forward analysis
+        // through the PartiallyFulfilledExploitabilityRuleState for both cases
+        // below in `infer_exploitability_sinks`
+        break;
+
+      case Root::Kind::CallEffectIntent:
+        break;
+      default:
+        mt_unreachable();
+    }
+  }
+
+  infer_exploitability_sinks(context, instruction);
 }
 
 } // namespace
@@ -714,6 +891,8 @@ bool BackwardTaintTransfer::analyze_invoke(
         result_taint);
   }
 
+  apply_call_effects(context, instruction, callee);
+
   return false;
 }
 
@@ -740,19 +919,20 @@ void check_flows_to_field_sink(
     return;
   }
 
-  auto field_model =
-      field_target ? context->registry.get(field_target->field) : FieldModel();
-  auto sinks = field_model.sinks();
-  if (sinks.empty()) {
-    return;
+  auto field_sinks = context->field_sinks_at_callsite(*field_target, aliasing);
+  if (!field_sinks.is_bottom()) {
+    auto memory_locations =
+        aliasing.register_memory_locations(instruction->src(0));
+    LOG_OR_DUMP(
+        context,
+        4,
+        "Tainting register {} at {} with {}",
+        instruction->src(0),
+        memory_locations,
+        field_sinks);
+    environment->write(
+        memory_locations, std::move(field_sinks), UpdateKind::Weak);
   }
-
-  LOG_OR_DUMP(
-      context, 4, "Tainting register {} with {}", instruction->src(0), sinks);
-  environment->write(
-      aliasing.register_memory_locations(instruction->src(0)),
-      std::move(sinks),
-      UpdateKind::Weak);
 }
 
 } // namespace
@@ -795,16 +975,17 @@ bool BackwardTaintTransfer::analyze_iput(
       instruction);
   target_taint.add_local_position(position);
 
+  auto memory_locations =
+      aliasing.register_memory_locations(instruction->src(0));
   LOG_OR_DUMP(
       context,
       4,
-      "Tainting register {} with {}",
+      "Tainting register {} at {} with {}",
       instruction->src(0),
+      memory_locations,
       target_taint);
   environment->write(
-      aliasing.register_memory_locations(instruction->src(0)),
-      std::move(target_taint),
-      UpdateKind::Weak);
+      memory_locations, std::move(target_taint), UpdateKind::Weak);
 
   check_flows_to_field_sink(context, aliasing, instruction, environment);
 
@@ -899,12 +1080,16 @@ bool BackwardTaintTransfer::analyze_aput(
       instruction);
   taint.add_locally_inferred_features_and_local_position(features, position);
 
+  auto memory_locations =
+      aliasing.register_memory_locations(instruction->src(0));
   LOG_OR_DUMP(
-      context, 4, "Tainting register {} with {}", instruction->src(0), taint);
-  environment->write(
-      aliasing.register_memory_locations(instruction->src(0)),
-      std::move(taint),
-      UpdateKind::Weak);
+      context,
+      4,
+      "Tainting register {} at {} with {}",
+      instruction->src(0),
+      memory_locations,
+      taint);
+  environment->write(memory_locations, std::move(taint), UpdateKind::Weak);
 
   return false;
 }
@@ -922,9 +1107,37 @@ bool BackwardTaintTransfer::analyze_filled_new_array(
     MethodContext* context,
     const IRInstruction* instruction,
     BackwardTaintEnvironment* environment) {
+  log_instruction(context, instruction);
   check_flows_to_array_allocation(
       context, context->aliasing.get(instruction), environment, instruction);
-  return analyze_default(context, instruction, environment);
+
+  const auto& aliasing = context->aliasing.get(instruction);
+
+  auto taint = environment->read(aliasing.result_memory_location());
+
+  auto features = FeatureMayAlwaysSet::make_always(
+      {context->feature_factory.get("via-array")});
+  auto* position = context->positions.get(
+      context->method(),
+      aliasing.position(),
+      Root(Root::Kind::Return),
+      instruction);
+  taint.add_locally_inferred_features_and_local_position(features, position);
+
+  for (size_t i = 0; i < instruction->srcs_size(); ++i) {
+    auto memory_locations =
+        aliasing.register_memory_locations(instruction->src(i));
+    LOG_OR_DUMP(
+        context,
+        4,
+        "Tainting register {} at {} with {}",
+        instruction->src(i),
+        memory_locations,
+        taint);
+    environment->write(memory_locations, taint, UpdateKind::Weak);
+  }
+
+  return false;
 }
 
 namespace {
@@ -948,11 +1161,15 @@ static bool analyze_numerical_operator(
   taint.add_locally_inferred_features_and_local_position(features, position);
 
   for (auto register_id : instruction->srcs()) {
-    LOG_OR_DUMP(context, 4, "Tainting register {} with {}", register_id, taint);
-    environment->write(
-        aliasing.register_memory_locations(register_id),
-        taint,
-        UpdateKind::Weak);
+    auto memory_locations = aliasing.register_memory_locations(register_id);
+    LOG_OR_DUMP(
+        context,
+        4,
+        "Tainting register {} at {} with {}",
+        register_id,
+        memory_locations,
+        taint);
+    environment->write(memory_locations, taint, UpdateKind::Weak);
   }
 
   return false;
@@ -1001,19 +1218,25 @@ bool BackwardTaintTransfer::analyze_return(
       /* kind */ context->kind_factory.local_return(),
       /* output_paths */
       PathTreeDomain{
-          {Path{}, CollapseDepth(Heuristics::kPropagationMaxCollapseDepth)}},
+          {Path{},
+           CollapseDepth(
+               Heuristics::singleton().propagation_max_collapse_depth())}},
       /* inferred_features */ {},
       /* user_features */ {})));
 
   if (instruction->srcs_size() == 1) {
     auto register_id = instruction->src(0);
-    LOG_OR_DUMP(context, 4, "Tainting register {} with {}", register_id, taint);
+    auto memory_locations = aliasing.register_memory_locations(register_id);
+    LOG_OR_DUMP(
+        context,
+        4,
+        "Tainting register {} at {} with {}",
+        register_id,
+        memory_locations,
+        taint);
     // Using a strong update here could override and remove the LocalArgument
     // taint on Argument(0), which is necessary to infer propagations to `this`.
-    environment->write(
-        aliasing.register_memory_locations(register_id),
-        taint,
-        UpdateKind::Weak);
+    environment->write(memory_locations, taint, UpdateKind::Weak);
   }
 
   return false;

@@ -12,6 +12,8 @@
 #include <mariana-trench/FeatureFactory.h>
 #include <mariana-trench/Heuristics.h>
 #include <mariana-trench/JsonValidation.h>
+#include <mariana-trench/KindFrames.h>
+#include <mariana-trench/LocalPositionSet.h>
 #include <mariana-trench/LocalTaint.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/PathTreeDomain.h>
@@ -34,13 +36,13 @@ void LocalTaint::add(const TaintConfig& config) {
     call_info_ = CallInfo(
         config.callee(),
         config.call_kind(),
-        AccessPathFactory::singleton().get(config.callee_port()),
+        config.callee_port(),
         config.call_position());
   } else {
     mt_assert(
         call_info_.callee() == config.callee() &&
         call_info_.call_kind() == config.call_kind() &&
-        *call_info_.callee_port() == config.callee_port() &&
+        call_info_.callee_port() == config.callee_port() &&
         call_info_.call_position() == config.call_position());
   }
 
@@ -155,16 +157,37 @@ void LocalTaint::difference_with(const LocalTaint& other) {
   }
 }
 
-void LocalTaint::set_origins(const Method* method, const AccessPath* port) {
+void LocalTaint::add_origins_if_declaration(
+    const Method* method,
+    const AccessPath* port) {
+  if (!call_kind().is_declaration()) {
+    return;
+  }
+
   transform_frames([method, port](Frame frame) {
-    frame.set_origins(method, port);
+    frame.add_origin(method, port);
     return frame;
   });
 }
 
-void LocalTaint::set_origins(const Field* field) {
+void LocalTaint::add_origins_if_declaration(const Field* field) {
+  if (!call_kind().is_declaration()) {
+    return;
+  }
+
   transform_frames([field](Frame frame) {
-    frame.set_origins(field);
+    frame.add_origin(field);
+    return frame;
+  });
+}
+
+void LocalTaint::add_origins_if_declaration(std::string_view literal) {
+  if (!call_kind().is_declaration()) {
+    return;
+  }
+
+  transform_frames([literal](Frame frame) {
+    frame.add_origin(literal);
     return frame;
   });
 }
@@ -223,35 +246,30 @@ map_frames_by_kind(
 } // namespace
 
 LocalTaint LocalTaint::propagate(
-    const Method* callee,
-    const AccessPath& callee_port,
+    const Method* MT_NULLABLE callee,
+    const AccessPath* MT_NULLABLE callee_port,
     const Position* call_position,
     int maximum_source_sink_distance,
     Context& context,
     const std::vector<const DexType * MT_NULLABLE>& source_register_types,
     const std::vector<std::optional<std::string>>& source_constant_arguments,
     const CallClassIntervalContext& class_interval_context,
-    const ClassIntervals::Interval& caller_class_interval) const {
+    const ClassIntervals::Interval& caller_class_interval,
+    const RootPatriciaTreeAbstractPartition<FeatureSet>&
+        add_features_to_arguments) const {
   if (is_bottom()) {
     return LocalTaint::bottom();
   }
 
   mt_assert(!call_kind().is_propagation_without_trace());
+  auto propagated_call_info =
+      call_info_.propagate(callee, callee_port, call_position, context);
 
-  // CRTEX is identified by the "anchor" port, leaf-ness is identified by the
-  // path() length. Once a CRTEX frame is propagated, its path is never empty.
-  const auto* current_callee_port = call_info_.callee_port();
-  bool is_crtex_leaf = current_callee_port != nullptr &&
-      current_callee_port->root().is_anchor() &&
-      current_callee_port->path().size() == 0;
-  auto propagated_callee_port =
-      is_crtex_leaf ? callee_port.canonicalize_for_method(callee) : callee_port;
   FramesByKind propagated_frames_by_kind;
   for (const auto& [kind, frames] : frames_.bindings()) {
     auto propagated = frames.propagate(
         callee,
-        propagated_callee_port,
-        call_position,
+        propagated_call_info,
         locally_inferred_features_,
         maximum_source_sink_distance,
         context,
@@ -272,19 +290,25 @@ LocalTaint LocalTaint::propagate(
     return LocalTaint::bottom();
   }
 
+  auto locally_inferred_features = FeatureMayAlwaysSet::bottom();
+  const auto* propagated_callee_port = propagated_call_info.callee_port();
+  if (propagated_callee_port != nullptr) {
+    const auto& features_for_argument =
+        add_features_to_arguments.get(propagated_callee_port->root());
+    if (!features_for_argument.is_bottom()) {
+      locally_inferred_features.add_always(features_for_argument);
+    }
+  }
+
   return LocalTaint(
-      CallInfo(
-          /* callee */ callee,
-          /* call_kind */ call_kind().propagate(),
-          /* callee_port */
-          context.access_path_factory->get(propagated_callee_port),
-          /* call_position */ call_position),
+      propagated_call_info,
       propagated_frames_by_kind,
       /* local_positions */ {},
-      /* locally_inferred_features */ FeatureMayAlwaysSet::bottom());
+      locally_inferred_features);
 }
 
 LocalTaint LocalTaint::update_with_propagation_trace(
+    const CallInfo& propagation_call_info,
     const Frame& propagation_frame) const {
   if (is_bottom()) {
     return LocalTaint::bottom();
@@ -297,10 +321,22 @@ LocalTaint LocalTaint::update_with_propagation_trace(
     // All these (prior) transform hops are tracked as ExtraTrace hop
     // frames to create a subtrace.
     LocalTaint result = *this;
-    result.transform_frames([&propagation_frame](Frame frame) {
-      frame.add_extra_trace(propagation_frame);
-      return frame;
-    });
+    result.transform_frames(
+        [&propagation_call_info, &propagation_frame](Frame frame) {
+          auto call_kind = propagation_call_info.call_kind();
+          if (call_kind.is_propagation_without_trace()) {
+            // These should be added as the next hop of the trace.
+            return frame;
+          }
+          frame.add_extra_trace(ExtraTrace(
+              propagation_frame.kind(),
+              propagation_call_info.callee(),
+              propagation_call_info.call_position(),
+              propagation_call_info.callee_port(),
+              call_kind,
+              FrameType::sink()));
+          return frame;
+        });
 
     return result;
   }
@@ -313,7 +349,7 @@ LocalTaint LocalTaint::update_with_propagation_trace(
       });
 
   return LocalTaint(
-      propagation_frame.call_info(),
+      propagation_call_info,
       std::move(frames),
       local_positions_,
       locally_inferred_features_);
@@ -329,21 +365,22 @@ LocalTaint LocalTaint::attach_position(const Position* call_position) const {
     return LocalTaint::bottom();
   }
 
+  // Since attach_position is used (only) for parameter_sinks and return
+  // sources which may be included in an issue as a leaf, we need to make
+  // sure that those leaf frames in issues contain the user_features as being
+  // locally inferred.
   FeatureSet user_features;
   FramesByKind frames = map_frames_by_kind(
       frames_,
-      [call_position,
-       locally_inferred_features = locally_inferred_features_,
-       user_features = &user_features](const Frame& frame) {
-        user_features->join_with(
+      [&locally_inferred_features = locally_inferred_features_,
+       &user_features](const Frame& frame) {
+        user_features.join_with(
             frame.user_features()); // Collect all user features.
         auto inferred_features = frame.features();
         inferred_features.add(locally_inferred_features);
+        // Consider using a propagate() call here.
         return Frame(
             frame.kind(),
-            frame.callee_port(),
-            /* callee */ nullptr,
-            call_position,
             // TODO(T158171922): Re-visit what the appropriate interval
             // should be when implementing class intervals.
             frame.class_interval_context(),
@@ -354,15 +391,10 @@ LocalTaint LocalTaint::attach_position(const Position* call_position) const {
             /* via_type_of_ports */ {},
             /* via_value_of_ports */ {},
             frame.canonical_names(),
-            /* call_kind */ CallKind::origin(),
             /* output_paths */ {},
             frame.extra_traces());
       });
 
-  // Since CallPositionFrames::attach_position is used (only) for
-  // parameter_sinks and return sources which may be included in an issue as a
-  // leaf, we need to make sure that those leaf frames in issues contain the
-  // user_features as being locally inferred.
   auto locally_inferred_features = user_features.is_bottom()
       ? FeatureMayAlwaysSet::bottom()
       : FeatureMayAlwaysSet::make_always(user_features);
@@ -381,20 +413,55 @@ LocalTaint LocalTaint::apply_transform(
     const KindFactory& kind_factory,
     const TransformsFactory& transforms,
     const UsedKinds& used_kinds,
-    const TransformList* local_transforms) const {
+    const TransformList* local_transforms,
+    transforms::TransformDirection direction) const {
   FramesByKind new_frames;
-  for (const auto& frame : *this) {
+  this->visit_kind_frames([&new_frames,
+                           &kind_factory,
+                           &transforms,
+                           &used_kinds,
+                           local_transforms,
+                           direction](const KindFrames& frame) {
     auto new_frame = frame.apply_transform(
-        kind_factory, transforms, used_kinds, local_transforms);
+        kind_factory, transforms, used_kinds, local_transforms, direction);
     if (!new_frame.is_bottom()) {
       new_frames.update(
           new_frame.kind(), [&new_frame](const KindFrames& old_frames) {
-            auto frames_copy = old_frames;
-            frames_copy.add(new_frame);
-            return frames_copy;
+            return old_frames.join(new_frame);
           });
     }
+  });
+
+  if (new_frames.is_bottom()) {
+    return LocalTaint::bottom();
   }
+
+  return LocalTaint(
+      call_info_,
+      std::move(new_frames),
+      local_positions_,
+      locally_inferred_features_);
+}
+
+LocalTaint LocalTaint::add_sanitize_transform(
+    const Sanitizer& sanitizer,
+    const KindFactory& kind_factory,
+    const TransformsFactory& transforms_factory) const {
+  FramesByKind new_frames;
+  this->visit_kind_frames(
+      [&new_frames, &sanitizer, &kind_factory, &transforms_factory](
+          const KindFrames& kind_frames) {
+        auto new_kind_frames = kind_frames.add_sanitize_transform(
+            sanitizer, kind_factory, transforms_factory);
+        if (!kind_frames.is_bottom()) {
+          new_frames.update(
+              new_kind_frames.kind(),
+              [&new_kind_frames](const KindFrames& old_frames) {
+                new_kind_frames.join_with(old_frames);
+                return new_kind_frames;
+              });
+        }
+      });
 
   if (new_frames.is_bottom()) {
     return LocalTaint::bottom();
@@ -418,57 +485,118 @@ void LocalTaint::update_maximum_collapse_depth(CollapseDepth collapse_depth) {
   });
 }
 
-void LocalTaint::update_non_leaf_positions(
-    const std::function<
-        const Position*(const Method*, const AccessPath&, const Position*)>&
-        map_call_position,
+std::vector<LocalTaint> LocalTaint::update_non_declaration_positions(
+    const std::function<const Position*(
+        const Method*,
+        const AccessPath* MT_NULLABLE,
+        const Position* MT_NULLABLE)>& map_call_position,
     const std::function<LocalPositionSet(const LocalPositionSet&)>&
-        map_local_positions) {
-  if (is_bottom()) {
-    return;
+        map_local_positions) const {
+  if (is_bottom() || call_kind().is_declaration()) {
+    // Nothing to update.
+    return std::vector{*this};
   }
 
-  if (callee() == nullptr) {
-    // This is a leaf.
-    return;
+  auto new_local_positions = map_local_positions(local_positions_);
+
+  if (call_kind().is_origin()) {
+    // There can be mulitple callee(s) for origins. These are stored in
+    // Frame::origins.
+    return update_origin_positions(map_call_position, new_local_positions);
   }
 
-  auto new_call_position =
-      map_call_position(callee(), *callee_port(), call_position());
+  const auto* callee = this->callee();
+  // This should have call kind == CallSite, callee should not be nullptr.
+  mt_assert(callee != nullptr);
 
-  call_info_ =
-      CallInfo(callee(), call_kind(), callee_port(), new_call_position);
-  frames_ =
-      map_frames_by_kind(frames_, [new_call_position](const Frame& frame) {
-        return Frame(
-            frame.kind(),
-            frame.callee_port(),
-            frame.callee(),
-            new_call_position,
-            frame.class_interval_context(),
-            frame.distance(),
-            frame.origins(),
-            frame.inferred_features(),
-            frame.user_features(),
-            frame.via_type_of_ports(),
-            frame.via_value_of_ports(),
-            frame.canonical_names(),
-            frame.call_kind(),
-            /* output_paths */ {},
-            frame.extra_traces());
-      });
-  local_positions_ = map_local_positions(local_positions_);
+  const auto* callee_port = this->callee_port();
+  const auto* call_position = this->call_position();
+
+  const auto* MT_NULLABLE new_call_position =
+      map_call_position(callee, callee_port, call_position);
+  auto new_call_info =
+      CallInfo(callee, call_kind(), callee_port, new_call_position);
+
+  return {LocalTaint(
+      new_call_info, frames_, new_local_positions, locally_inferred_features_)};
 }
 
-void LocalTaint::filter_invalid_frames(
-    const std::function<bool(const Method*, const AccessPath&, const Kind*)>&
-        is_valid) {
+std::vector<LocalTaint> LocalTaint::update_origin_positions(
+    const std::function<const Position*(
+        const Method*,
+        const AccessPath* MT_NULLABLE,
+        const Position* MT_NULLABLE)>& map_call_position,
+    const LocalPositionSet& new_local_positions) const {
+  mt_assert(this->call_kind().is_origin());
+  std::vector<LocalTaint> results;
+
+  const auto* callee = this->callee();
+  const auto call_kind = this->call_kind();
+  const auto* callee_port = this->callee_port();
+  const auto* call_position = this->call_position();
+
+  this->visit_frames([this,
+                      &map_call_position,
+                      &new_local_positions,
+                      &results,
+                      &call_kind,
+                      callee,
+                      callee_port,
+                      call_position](const CallInfo&, const Frame& frame) {
+    OriginSet non_method_origins{};
+    for (const auto* origin : frame.origins()) {
+      const auto* method_origin = origin->as<MethodOrigin>();
+      if (method_origin == nullptr) {
+        // Only method origins have callee information
+        non_method_origins.add(origin);
+        continue;
+      }
+
+      const auto* MT_NULLABLE new_call_position = map_call_position(
+          method_origin->method(), method_origin->port(), call_position);
+      auto new_call_info =
+          CallInfo(callee, call_kind, callee_port, new_call_position);
+      results.emplace_back(LocalTaint(
+          new_call_info,
+          FramesByKind({std::pair(
+              frame.kind(),
+              KindFrames(frame.with_origins(OriginSet{method_origin})))}),
+          new_local_positions,
+          locally_inferred_features_));
+    }
+
+    // Non-method origins will not have positions updated but their
+    // information should be retained.
+    if (!non_method_origins.empty()) {
+      results.emplace_back(LocalTaint(
+          call_info_,
+          FramesByKind({std::pair(
+              frame.kind(),
+              KindFrames(frame.with_origins(non_method_origins)))}),
+          new_local_positions,
+          locally_inferred_features_));
+    }
+  });
+
+  // This can only happen if there are no origins to begin with, which points
+  // to a problem with populating them correctly during model generation.
+  mt_assert(!results.empty());
+  return results;
+}
+
+void LocalTaint::filter_invalid_frames(const std::function<bool(
+                                           const Method* MT_NULLABLE,
+                                           const AccessPath* MT_NULLABLE,
+                                           const Kind*)>& is_valid) {
   if (is_bottom()) {
     return;
   }
 
-  frames_.transform([&is_valid](KindFrames kind_frames) {
-    kind_frames.filter_invalid_frames(is_valid);
+  frames_.transform([&is_valid,
+                     &call_info = call_info_](KindFrames kind_frames) {
+    kind_frames.filter_invalid_frames([&is_valid, call_info](const Kind* kind) {
+      return is_valid(call_info.callee(), call_info.callee_port(), kind);
+    });
     return kind_frames;
   });
 
@@ -483,11 +611,11 @@ bool LocalTaint::contains_kind(const Kind* kind) const {
 
 FeatureMayAlwaysSet LocalTaint::features_joined() const {
   auto features = FeatureMayAlwaysSet::bottom();
-  for (const auto& frame : *this) {
+  this->visit_frames([&features, this](const CallInfo&, const Frame& frame) {
     auto combined_features = frame.features();
     combined_features.add(locally_inferred_features_);
     features.join_with(combined_features);
-  }
+  });
   return features;
 }
 
@@ -518,12 +646,6 @@ void LocalTaint::add(const Frame& frame) {
     return;
   }
 
-  if (is_bottom()) {
-    call_info_ = frame.call_info();
-  } else {
-    mt_assert(call_info_ == frame.call_info());
-  }
-
   frames_.update(frame.kind(), [&frame](const KindFrames& old_frames) {
     auto frames_copy = old_frames;
     frames_copy.add(frame);
@@ -531,90 +653,69 @@ void LocalTaint::add(const Frame& frame) {
   });
 }
 
+LocalTaint LocalTaint::from_json(const Json::Value& value, Context& context) {
+  JsonValidation::validate_object(value);
+  auto call_info = CallInfo::from_json(value, context);
+
+  FramesByKind frames_by_kind;
+  for (const auto& kind_json : JsonValidation::nonempty_array(value, "kinds")) {
+    auto kind_frame =
+        KindFrames(Frame::from_json(kind_json, call_info, context));
+    frames_by_kind.update(
+        kind_frame.kind(), [&kind_frame](const KindFrames& existing_frame) {
+          return existing_frame.join(kind_frame);
+        });
+  }
+
+  auto local_features = FeatureMayAlwaysSet::bottom();
+  if (value.isMember("local_features")) {
+    local_features =
+        FeatureMayAlwaysSet::from_json(value["local_features"], context);
+  }
+
+  // Skip parsing "local_user_features". This information comes from `Frame`
+  // when CallInfo is an Origin and is specially handled in Frame::from_json.
+
+  auto local_positions = LocalPositionSet();
+  if (value.isMember("local_positions")) {
+    local_positions =
+        LocalPositionSet::from_json(value["local_positions"], context);
+  }
+
+  return LocalTaint(
+      call_info,
+      std::move(frames_by_kind),
+      std::move(local_positions),
+      std::move(local_features));
+}
+
 Json::Value LocalTaint::to_json(ExportOriginsMode export_origins_mode) const {
-  auto taint = Json::Value(Json::objectValue);
+  auto taint = call_info_.to_json();
+  mt_assert(taint.isObject() && !taint.isNull());
 
   auto kinds = Json::Value(Json::arrayValue);
-  for (const auto& frame : *this) {
-    kinds.append(frame.to_json(export_origins_mode));
-  }
+  this->visit_frames([&kinds, export_origins_mode](
+                         const CallInfo& call_info, const Frame& frame) {
+    kinds.append(frame.to_json(call_info, export_origins_mode));
+  });
   taint["kinds"] = kinds;
-
-  // In most cases, all 3 values (callee, position, port) are expected to be
-  // present. Some edge cases are:
-  //
-  // - Standard leaf/terminal frames: The "call" key will be absent because
-  //   there is no "next hop".
-  // - CRTEX leaf/terminal frames: The callee port will be "producer/anchor".
-  //   SAPP post-processing will transform it to something that other static
-  //   analysis tools in the family can understand.
-  // - Return sinks and parameter sources: There is no "callee", but the
-  //   position points to the return instruction/parameter.
-
-  const Method* callee = this->callee();
-  CallKind call_kind = this->call_kind();
-  const AccessPath* callee_port = this->callee_port();
-  const Position* call_position = this->call_position();
-
-  // We don't want to emit calls in origin frames in the non-CRTEX case.
-  if (callee_port != nullptr && !callee_port->root().is_leaf_port() &&
-      call_kind.is_origin()) {
-    // Since we don't emit calls for origins, we need to provide the origin
-    // location for proper visualisation.
-    if (call_position != nullptr) {
-      auto origin = Json::Value(Json::objectValue);
-      origin["position"] = call_position->to_json();
-
-      // TODO(T163918472): Remove this in favor of "leaves" after parser is
-      // updated. New format should work for CRTEX as well. Callee should
-      // always be nullptr at origins.
-      if (callee != nullptr) {
-        origin["method"] = callee->to_json();
-      }
-
-      OriginSet leaves;
-      for (const auto& frame : *this) {
-        leaves.join_with(frame.origins());
-      }
-      if (!leaves.empty()) {
-        origin["leaves"] = leaves.to_json();
-      }
-
-      taint["origin"] = origin;
-    }
-  } else if (
-      !call_kind.is_declaration() &&
-      !call_kind.is_propagation_without_trace()) {
-    // Never emit calls for declarations and propagations without traces.
-    // Emit it for everything else.
-    auto call = Json::Value(Json::objectValue);
-    if (callee != nullptr) {
-      call["resolves_to"] = callee->to_json();
-    }
-    if (call_position != nullptr) {
-      call["position"] = call_position->to_json();
-    }
-    if (callee_port != nullptr && !callee_port->root().is_leaf()) {
-      call["port"] = callee_port->to_json();
-    }
-    taint["call"] = call;
-  }
 
   if (!locally_inferred_features_.is_bottom() &&
       !locally_inferred_features_.empty()) {
     taint["local_features"] = locally_inferred_features_.to_json();
   }
 
-  if (call_kind.is_origin()) {
+  if (call_kind().is_origin()) {
     // User features on the origin frame come from the declaration and should
     // be reported in order to show up in the UI. Note that they cannot be
     // stored as locally_inferred_features in LocalTaint because they may be
     // defined on different kinds and do not apply to all frames within the
     // propagated CalleePortFrame.
     FeatureMayAlwaysSet local_user_features;
-    for (const auto& frame : *this) {
-      local_user_features.add_always(frame.user_features());
-    }
+    this->visit_frames(
+        [&local_user_features](const CallInfo&, const Frame& frame) {
+          local_user_features.add_always(frame.user_features());
+        });
     if (!local_user_features.is_bottom() && !local_user_features.empty()) {
       taint["local_user_features"] = local_user_features.to_json();
     }

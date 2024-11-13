@@ -210,14 +210,6 @@
       "Landroidx/fragment/app/FragmentActivity;.<init>:()V"
     ]
   },
-  "Lcom/facebook/marianatrench/integrationtests/BaseFragment;.activity_lifecycle_wrapper:(Landroid/os/Bundle;)V" : 
-  {
-    "static" : 
-    [
-      "Lcom/facebook/marianatrench/integrationtests/BaseFragment;.onCreate:(Landroid/os/Bundle;)V",
-      "Lcom/facebook/marianatrench/integrationtests/BaseFragment;.onStart:()V"
-    ]
-  },
   "Lcom/facebook/marianatrench/integrationtests/BaseFragment;.onCreate:(Landroid/os/Bundle;)V" : 
   {
     "static" : 
@@ -246,6 +238,14 @@
     "static" : 
     [
       "Lcom/facebook/marianatrench/integrationtests/BaseFragment;.<init>:()V"
+    ]
+  },
+  "Lcom/facebook/marianatrench/integrationtests/ChildFragment;.activity_lifecycle_wrapper:(Landroid/os/Bundle;)V" : 
+  {
+    "virtual" : 
+    [
+      "Lcom/facebook/marianatrench/integrationtests/BaseFragment;.onCreate:(Landroid/os/Bundle;)V",
+      "Lcom/facebook/marianatrench/integrationtests/ChildFragment;.onStart:()V"
     ]
   },
   "Lcom/facebook/marianatrench/integrationtests/ChildFragment;.onAfterActivityCreate:()V" : 
@@ -294,7 +294,7 @@
   },
   "Lcom/facebook/marianatrench/integrationtests/SimpleFragment;.activity_lifecycle_wrapper:(Landroid/os/Bundle;)V" : 
   {
-    "static" : 
+    "virtual" : 
     [
       "Lcom/facebook/marianatrench/integrationtests/SimpleFragment;.onCreate:(Landroid/os/Bundle;)V",
       "Lcom/facebook/marianatrench/integrationtests/SimpleFragment;.onStart:()V"
@@ -437,6 +437,13 @@
     ]
   },
   "Ljava/util/TreeMap;.<init>:()V" : 
+  {
+    "static" : 
+    [
+      "Ljava/lang/Object;.<init>:()V"
+    ]
+  },
+  "Lkotlin/jvm/internal/Intrinsics;.<init>:()V" : 
   {
     "static" : 
     [

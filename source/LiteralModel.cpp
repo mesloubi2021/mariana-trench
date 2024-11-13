@@ -38,9 +38,11 @@ static Taint create_taint(
   Taint all_sources;
   for (const auto& source : sources) {
     mt_assert(source.is_leaf());
+    mt_assert(source.call_kind().is_declaration());
     check_taint_config_consistency(pattern, source);
     all_sources.join_with(Taint{source});
   }
+  all_sources.add_origins_if_declaration(pattern);
   return all_sources;
 }
 
@@ -83,7 +85,7 @@ bool LiteralModel::empty() const {
   return sources_.is_bottom();
 }
 
-LiteralModel LiteralModel::from_json(
+LiteralModel LiteralModel::from_config_json(
     const Json::Value& value,
     Context& context) {
   JsonValidation::check_unexpected_members(
@@ -112,10 +114,11 @@ Json::Value LiteralModel::to_json(
 
   if (!sources_.is_bottom()) {
     auto sources_value = Json::Value(Json::arrayValue);
-    for (const auto& source : sources_.frames_iterator()) {
+    sources_.visit_frames([&sources_value, export_origins_mode](
+                              const CallInfo& call_info, const Frame& source) {
       mt_assert(!source.is_bottom());
-      sources_value.append(source.to_json(export_origins_mode));
-    }
+      sources_value.append(source.to_json(call_info, export_origins_mode));
+    });
     value["sources"] = sources_value;
   }
 

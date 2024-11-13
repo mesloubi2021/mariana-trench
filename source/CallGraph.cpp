@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <unordered_map>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <re2/re2.h>
 
@@ -20,9 +21,12 @@
 
 #include <mariana-trench/Assert.h>
 #include <mariana-trench/CallGraph.h>
+#include <mariana-trench/EventLogger.h>
 #include <mariana-trench/FeatureFactory.h>
 #include <mariana-trench/FeatureSet.h>
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/JsonValidation.h>
+#include <mariana-trench/KotlinHeuristics.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/Methods.h>
 #include <mariana-trench/shim-generator/Shim.h>
@@ -30,6 +34,10 @@
 namespace marianatrench {
 
 namespace {
+
+bool is_static_invoke(const IRInstruction* instruction) {
+  return opcode::is_invoke_static(instruction->opcode());
+}
 
 bool is_virtual_invoke(const IRInstruction* instruction) {
   switch (instruction->opcode()) {
@@ -170,7 +178,7 @@ ParameterTypeOverrides anonymous_class_arguments(
     if (found == environment.end()) {
       continue;
     }
-    const auto* type = found->second;
+    const auto* type = found->second.singleton_type();
     if (type && is_anonymous_class(type)) {
       parameters.emplace(parameter_position, type);
     }
@@ -206,8 +214,8 @@ ArtificialCallees anonymous_class_artificial_callees(
     auto call_index =
         update_index(sink_textual_order_index, method->signature());
     callees.push_back(ArtificialCallee{
-        /* call_target */ CallTarget::static_call(
-            instruction, method, call_index),
+        /* call_target */ CallTarget::direct_call(
+            instruction, method, call_index, anonymous_class_type),
         /* root_registers */
         {{Root(Root::Kind::Argument, 0), register_id}},
         /* features */ features,
@@ -256,12 +264,12 @@ const Method* get_callee_from_resolved_call(
     const IRInstruction* instruction,
     const ParameterTypeOverrides& parameter_type_overrides,
     const Options& options,
-    Methods& method_factory,
     const FeatureFactory& feature_factory,
+    Methods& method_factory,
+    MethodMappings& method_mappings,
     ArtificialCallees& artificial_callees,
     std::unordered_map<std::string, TextualOrderIndex>&
-        sink_textual_order_index,
-    MethodMappings& method_mappings) {
+        sink_textual_order_index) {
   const Method* callee = nullptr;
   if (dex_callee->get_code() == nullptr) {
     // When passing an anonymous class into an external callee (no code), add
@@ -279,7 +287,9 @@ const Method* get_callee_from_resolved_call(
 
     // No need to use type overrides since we don't have the code.
     callee = method_factory.get(dex_callee);
-  } else if (options.disable_parameter_type_overrides()) {
+  } else if (
+      options.disable_parameter_type_overrides() ||
+      KotlinHeuristics::skip_parameter_type_overrides(dex_callee)) {
     callee = method_factory.get(dex_callee);
   } else {
     // Analyze the callee with these particular types.
@@ -304,10 +314,38 @@ void process_shim_target(
         sink_textual_order_index,
     std::vector<ArtificialCallee>& artificial_callees,
     const FeatureSet& extra_features) {
-  const auto* method = shim_target.method();
-  mt_assert(method != nullptr);
+  const auto& method_spec = shim_target.method_spec();
 
-  auto receiver_register = shim_target.receiver_register(instruction);
+  const DexType* receiver_type = nullptr;
+  const std::unordered_set<const DexType*>* receiver_local_extends = nullptr;
+  if (auto receiver_register = shim_target.receiver_register(instruction)) {
+    receiver_type =
+        types.register_type(caller, instruction, *receiver_register);
+    receiver_local_extends =
+        &types.register_local_extends(caller, instruction, *receiver_register);
+  }
+  if (receiver_type == nullptr) {
+    receiver_type = method_spec.cls;
+  }
+
+  const auto* dex_method = resolve_method(
+      type_class(receiver_type),
+      method_spec.name,
+      method_spec.proto,
+      MethodSearch::Any);
+
+  if (!dex_method) {
+    EventLogger::log_event(
+        "shim_method_not_found",
+        fmt::format(
+            "Could not resolve method for shim target: {} at instruction {} in caller: {}",
+            shim_target,
+            show(instruction),
+            caller->show()));
+    return;
+  }
+
+  const auto* method = method_factory.get(dex_method);
   auto root_registers = shim_target.root_registers(instruction);
 
   auto call_index = update_index(sink_textual_order_index, method->signature());
@@ -315,6 +353,7 @@ void process_shim_target(
       extra_features);
 
   if (method->is_static()) {
+    mt_assert(shim_target.is_static());
     artificial_callees.push_back(ArtificialCallee{
         /* call_target */ CallTarget::static_call(
             instruction, method, call_index),
@@ -324,36 +363,13 @@ void process_shim_target(
     return;
   }
 
-  const auto* receiver_type = method->get_class();
-  // Try to refine the virtual call using the runtime type.
-  if (receiver_register) {
-    auto register_type =
-        types.register_type(caller, instruction, *receiver_register);
-    receiver_type = register_type ? register_type : receiver_type;
-  }
-
-  auto dex_runtime_method = resolve_method(
-      type_class(receiver_type),
-      method->dex_method()->get_name(),
-      method->get_proto(),
-      MethodSearch::Virtual);
-
-  if (!dex_runtime_method) {
-    WARNING(
-        1,
-        "Could not resolve method for artificial call to: {}",
-        method->show());
-    return;
-  }
-
-  method = method_factory.get(dex_runtime_method);
-
   artificial_callees.push_back(ArtificialCallee{
       /* call_target */ CallTarget::virtual_call(
           instruction,
           method,
           call_index,
           receiver_type,
+          receiver_local_extends,
           class_hierarchies,
           override_factory),
       /* root_registers */ root_registers,
@@ -375,29 +391,17 @@ void process_shim_reflection(
         sink_textual_order_index,
     std::vector<ArtificialCallee>& artificial_callees) {
   const auto& method_spec = shim_reflection.method_spec();
-  mt_assert(
-      method_spec.cls == type::java_lang_Class() &&
-      method_spec.name != nullptr && method_spec.proto != nullptr);
-
-  auto receiver_register = shim_reflection.receiver_register(instruction);
-  if (!receiver_register) {
-    ERROR(
-        1,
-        "Missing parameter mapping for receiver in shim: {} defined for method {}",
-        shim_reflection,
-        callee->show());
-    return;
-  }
-
-  const auto* reflection_type =
-      types.register_const_class_type(caller, instruction, *receiver_register);
+  const auto* reflection_type = types.register_const_class_type(
+      caller, instruction, shim_reflection.receiver_register(instruction));
 
   if (reflection_type == nullptr) {
-    WARNING(
-        1,
-        "Could not resolve reflected type for shim: {} in caller: {}",
-        shim_reflection,
-        caller->show());
+    EventLogger::log_event(
+        "shim_reflection_type_resolution_failure",
+        fmt::format(
+            "Could not resolve receiver type for shim reflection target: {} at instruction: {} in caller: {}",
+            shim_reflection,
+            show(instruction),
+            caller->show()));
     return;
   }
 
@@ -405,14 +409,16 @@ void process_shim_reflection(
       type_class(reflection_type),
       method_spec.name,
       method_spec.proto,
-      MethodSearch::Virtual);
+      MethodSearch::Any);
 
   if (!dex_reflection_method) {
-    WARNING(
-        1,
-        "Could not resolve method for artificial call to: {} in caller: {}",
-        show(dex_reflection_method),
-        caller->show());
+    EventLogger::log_event(
+        "shim_reflection_method_not_found",
+        fmt::format(
+            "Could not resolve method for shim reflection target: {} at instruction {} in caller: {}",
+            shim_reflection,
+            show(instruction),
+            caller->show()));
     return;
   }
 
@@ -428,6 +434,7 @@ void process_shim_reflection(
           reflection_method,
           call_index,
           reflection_type,
+          /* receiver_local_extends */ nullptr,
           class_hierarchies,
           override_factory),
       /* root_registers */ root_registers,
@@ -441,11 +448,11 @@ void process_shim_lifecycle(
     const Method* callee,
     const ShimLifecycleTarget& shim_lifecycle,
     const IRInstruction* instruction,
-    const Methods& method_factory,
     const Types& types,
-    const Overrides& override_factory,
+    const LifecycleMethods& lifecycle_methods,
     const ClassHierarchies& class_hierarchies,
     const FeatureFactory& feature_factory,
+    const Heuristics& heuristics,
     std::unordered_map<std::string, TextualOrderIndex>&
         sink_textual_order_index,
     std::vector<ArtificialCallee>& artificial_callees) {
@@ -456,67 +463,109 @@ void process_shim_lifecycle(
       ? types.register_const_class_type(caller, instruction, receiver_register)
       : types.register_type(caller, instruction, receiver_register);
   if (receiver_type == nullptr) {
-    WARNING(
-        1,
-        "Could not resolve receiver type for shim: {} at instruction: {} in caller: {}",
-        shim_lifecycle,
-        show(instruction),
-        caller->show());
+    EventLogger::log_event(
+        "shim_lifecycle_receiver_type_resolution_failure",
+        fmt::format(
+            "Could not resolve receiver type for shim lifecycle target: {} at instruction: {} in caller: {}",
+            shim_lifecycle,
+            show(instruction),
+            caller->show()));
     return;
   }
 
-  auto result = std::find_if(
-      method_factory.begin(),
-      method_factory.end(),
-      [&method_name, receiver_type](const Method* method) {
-        return method->get_class()->str() == receiver_type->str() &&
-            method->get_name() == method_name;
-      });
-  if (result == method_factory.end()) {
-    WARNING(
-        1,
-        "Specified lifecycle method not found: `{}` for class: `{}` in caller: {}",
-        method_name,
-        receiver_type->str(),
-        caller->show());
-
+  auto result = lifecycle_methods.methods().find(method_name);
+  if (result == lifecycle_methods.methods().end()) {
+    // This indicates an error in the user configuration, e.g. incorrect method
+    // name, or not providing life-cycles JSON, etc.
+    EventLogger::log_event(
+        "shim_lifecycle_method_not_found",
+        fmt::format("Specified lifecycle method not found: `{}`", method_name));
     return;
   }
-  const Method* lifecycle_method = *result;
 
-  auto root_registers =
-      shim_lifecycle.root_registers(callee, lifecycle_method, instruction);
-  auto call_index =
-      update_index(sink_textual_order_index, lifecycle_method->signature());
+  const auto& local_extends =
+      types.register_local_extends(caller, instruction, receiver_register);
+  std::vector<std::string> local_extends_string;
+  for (const auto& local_extends_type : local_extends) {
+    local_extends_string.push_back(show(local_extends_type));
+  }
+  const auto types_logging = fmt::format(
+      "Receiver type: `{}`, Local extends: {}",
+      show(receiver_type),
+      boost::join(local_extends_string, ","));
 
-  artificial_callees.push_back(ArtificialCallee{
-      /* call_target */ CallTarget::virtual_call(
-          instruction,
-          lifecycle_method,
-          call_index,
-          receiver_type,
-          class_hierarchies,
-          override_factory),
-      /* root_registers */ root_registers,
-      /* features */
-      FeatureSet{feature_factory.get_via_shim_feature(callee)},
-  });
+  auto target_lifecycle_methods = result->second.get_methods_for_type(
+      receiver_type, local_extends, class_hierarchies);
+  if (target_lifecycle_methods.size() == 0) {
+    EventLogger::log_event(
+        "shim_lifecycle_target_method_not_found",
+        fmt::format(
+            "Could not resolve any method for shim lifecycle target: `{}` at instruction: `{}` in caller: `{}`. {}",
+            shim_lifecycle,
+            show(instruction),
+            caller->show(),
+            types_logging));
+    return;
+  } else if (
+      target_lifecycle_methods.size() >= heuristics.join_override_threshold()) {
+    // Although this is not a join, shimming to the derived life-cycle methods
+    // simulates the joining the models of these as if they were virtual
+    // overrides. Besides, if there is a large number of overrides, there will
+    // likely be many false positives as well.
+    EventLogger::log_event(
+        "shim_lifecycle_target_too_many_overrides",
+        fmt::format(
+            "Shim lifecycle target: `{}` resolved to {} methods at instruction: `{}` in caller: `{}` "
+            "which exceeds the join override threshold of {}. Shim not created. {}",
+            method_name,
+            target_lifecycle_methods.size(),
+            show(instruction),
+            caller->show(),
+            heuristics.join_override_threshold(),
+            types_logging));
+    return;
+  } else {
+    EventLogger::log_event(
+        "shim_lifecycle_target_found",
+        fmt::format(
+            "Shim lifecycle target: `{}` resolved to `{}` methods at instruction `{}` in caller: `{}`. {}",
+            method_name,
+            target_lifecycle_methods.size(),
+            show(instruction),
+            caller->show(),
+            types_logging));
+  }
+
+  for (const auto* lifecycle_method : target_lifecycle_methods) {
+    auto root_registers =
+        shim_lifecycle.root_registers(callee, lifecycle_method, instruction);
+    auto call_index =
+        update_index(sink_textual_order_index, lifecycle_method->signature());
+
+    artificial_callees.push_back(ArtificialCallee{
+        /* call_target */ CallTarget::direct_call(
+            instruction, lifecycle_method, call_index, receiver_type),
+        /* root_registers */ root_registers,
+        /* features */ FeatureSet{feature_factory.get_via_shim_feature(callee)},
+    });
+  }
 }
 
-std::vector<ArtificialCallee> shim_artificial_callees(
+void add_shim_artificial_callees(
     const Method* caller,
     const Method* callee,
     const IRInstruction* instruction,
     const Methods& method_factory,
     const Types& types,
+    const LifecycleMethods& lifecycle_methods,
     const Overrides& override_factory,
     const ClassHierarchies& class_hierarchies,
     const FeatureFactory& feature_factory,
     const Shim& shim,
+    const Heuristics& heuristics,
     std::unordered_map<std::string, TextualOrderIndex>&
-        sink_textual_order_index) {
-  std::vector<ArtificialCallee> artificial_callees;
-
+        sink_textual_order_index,
+    std::vector<ArtificialCallee>& artificial_callees) {
   for (const auto& shim_target : shim.targets()) {
     process_shim_target(
         caller,
@@ -554,11 +603,11 @@ std::vector<ArtificialCallee> shim_artificial_callees(
         callee,
         shim_lifecycle,
         instruction,
-        method_factory,
         types,
-        override_factory,
+        lifecycle_methods,
         class_hierarchies,
         feature_factory,
+        heuristics,
         sink_textual_order_index,
         artificial_callees);
   }
@@ -579,8 +628,6 @@ std::vector<ArtificialCallee> shim_artificial_callees(
         /* extra_features */
         FeatureSet{feature_factory.get_intent_routing_feature()});
   }
-
-  return artificial_callees;
 }
 
 bool is_field_instruction(const IRInstruction* instruction) {
@@ -603,19 +650,21 @@ bool is_field_or_invoke_instruction(const IRInstruction* instruction) {
 InstructionCallGraphInformation process_instruction(
     const Method* caller,
     const IRInstruction* instruction,
+    const Options& options,
+    const Types& types,
+    const ClassHierarchies& class_hierarchies,
+    const LifecycleMethods& lifecycle_methods,
+    const Shims& shims,
+    const FeatureFactory& feature_factory,
+    const Heuristics& heuristics,
     ConcurrentSet<const Method*>& worklist,
     ConcurrentSet<const Method*>& processed,
-    const Options& options,
     Methods& method_factory,
     Fields& field_factory,
-    const Types& types,
     Overrides& override_factory,
-    const ClassHierarchies& class_hierarchies,
-    const FeatureFactory& feature_factory,
-    const Shims& shims,
+    MethodMappings& method_mappings,
     std::unordered_map<std::string, TextualOrderIndex>&
-        sink_textual_order_index,
-    MethodMappings& method_mappings) {
+        sink_textual_order_index) {
   InstructionCallGraphInformation instruction_information;
 
   if (is_field_instruction(instruction)) {
@@ -671,25 +720,27 @@ InstructionCallGraphInformation process_instruction(
       instruction,
       parameter_type_overrides,
       options,
-      method_factory,
       feature_factory,
+      method_factory,
+      method_mappings,
       instruction_information.artificial_callees,
-      sink_textual_order_index,
-      method_mappings);
+      sink_textual_order_index);
 
   if (auto shim = shims.get_shim_for_caller(original_callee, caller)) {
-    auto artificial_callees = shim_artificial_callees(
+    add_shim_artificial_callees(
         caller,
         resolved_callee,
         instruction,
         method_factory,
         types,
+        lifecycle_methods,
         override_factory,
         class_hierarchies,
         feature_factory,
         *shim,
-        sink_textual_order_index);
-    instruction_information.artificial_callees = std::move(artificial_callees);
+        heuristics,
+        sink_textual_order_index,
+        instruction_information.artificial_callees);
   }
 
   auto call_index =
@@ -755,26 +806,42 @@ CallTarget::CallTarget(
     const Method* MT_NULLABLE resolved_base_callee,
     TextualOrderIndex call_index,
     const DexType* MT_NULLABLE receiver_type,
-    const std::unordered_set<const Method*>* MT_NULLABLE overrides,
-    const std::unordered_set<const DexType*>* MT_NULLABLE receiver_extends)
+    const std::unordered_set<const DexType*>* MT_NULLABLE
+        receiver_local_extends,
+    const std::unordered_set<const DexType*>* MT_NULLABLE receiver_extends,
+    const std::unordered_set<const Method*>* MT_NULLABLE overrides)
     : instruction_(instruction),
       resolved_base_callee_(resolved_base_callee),
       call_index_(call_index),
       receiver_type_(receiver_type),
-      overrides_(overrides),
-      receiver_extends_(receiver_extends) {}
+      receiver_local_extends_(receiver_local_extends),
+      receiver_extends_(receiver_extends),
+      overrides_(overrides) {}
 
 CallTarget CallTarget::static_call(
     const IRInstruction* instruction,
     const Method* MT_NULLABLE callee,
     TextualOrderIndex call_index) {
+  return CallTarget::direct_call(
+      instruction,
+      callee,
+      call_index,
+      /* receiver_type */ nullptr);
+}
+
+CallTarget CallTarget::direct_call(
+    const IRInstruction* instruction,
+    const Method* MT_NULLABLE callee,
+    TextualOrderIndex call_index,
+    const DexType* MT_NULLABLE receiver_type) {
   return CallTarget(
       instruction,
       /* resolved_base_callee */ callee,
       /* call_index */ call_index,
-      /* receiver_type */ nullptr,
-      /* overrides */ nullptr,
-      /* receiver_extends */ nullptr);
+      /* receiver_type */ receiver_type,
+      /* receiver_local_extends */ nullptr,
+      /* receiver_extends */ nullptr,
+      /* overrides */ nullptr);
 }
 
 CallTarget CallTarget::virtual_call(
@@ -782,6 +849,8 @@ CallTarget CallTarget::virtual_call(
     const Method* MT_NULLABLE resolved_base_callee,
     TextualOrderIndex call_index,
     const DexType* MT_NULLABLE receiver_type,
+    const std::unordered_set<const DexType*>* MT_NULLABLE
+        receiver_local_extends,
     const ClassHierarchies& class_hierarchies,
     const Overrides& override_factory) {
   // All overrides are potential callees.
@@ -818,8 +887,9 @@ CallTarget CallTarget::virtual_call(
       resolved_base_callee,
       call_index,
       receiver_type,
-      overrides,
-      receiver_extends);
+      receiver_local_extends,
+      receiver_extends,
+      overrides);
 }
 
 CallTarget CallTarget::from_call_instruction(
@@ -831,18 +901,24 @@ CallTarget CallTarget::from_call_instruction(
     const ClassHierarchies& class_hierarchies,
     const Overrides& override_factory) {
   mt_assert(opcode::is_an_invoke(instruction->opcode()));
-
-  if (is_virtual_invoke(instruction)) {
+  if (is_static_invoke(instruction)) {
+    return CallTarget::static_call(
+        instruction, resolved_base_callee, call_index);
+  } else if (is_virtual_invoke(instruction)) {
     return CallTarget::virtual_call(
         instruction,
         resolved_base_callee,
         call_index,
         types.receiver_type(caller, instruction),
+        &types.receiver_local_extends(caller, instruction),
         class_hierarchies,
         override_factory);
   } else {
-    return CallTarget::static_call(
-        instruction, resolved_base_callee, call_index);
+    return CallTarget::direct_call(
+        instruction,
+        resolved_base_callee,
+        call_index,
+        types.receiver_type(caller, instruction));
   }
 }
 
@@ -854,11 +930,16 @@ CallTarget::OverridesRange CallTarget::overrides() const {
   mt_assert(resolved());
   mt_assert(is_virtual());
 
+  const auto* extends = receiver_extends_;
+  if (receiver_local_extends_ && receiver_local_extends_->size() > 0) {
+    extends = receiver_local_extends_;
+  }
+
   return boost::make_iterator_range(
       boost::make_filter_iterator(
-          FilterOverrides{receiver_extends_}, overrides_->cbegin()),
+          FilterOverrides{extends}, overrides_->cbegin()),
       boost::make_filter_iterator(
-          FilterOverrides{receiver_extends_}, overrides_->cend()));
+          FilterOverrides{extends}, overrides_->cend()));
 }
 
 bool CallTarget::operator==(const CallTarget& other) const {
@@ -866,17 +947,20 @@ bool CallTarget::operator==(const CallTarget& other) const {
       resolved_base_callee_ == other.resolved_base_callee_ &&
       call_index_ == other.call_index_ &&
       receiver_type_ == other.receiver_type_ &&
-      overrides_ == other.overrides_ &&
-      receiver_extends_ == other.receiver_extends_;
+      receiver_local_extends_ == other.receiver_local_extends_ &&
+      receiver_extends_ == other.receiver_extends_ &&
+      overrides_ == other.overrides_;
 }
 
 std::ostream& operator<<(std::ostream& out, const CallTarget& call_target) {
   out << "CallTarget(instruction=`" << show(call_target.instruction())
       << "`, resolved_base_callee=`" << show(call_target.resolved_base_callee())
       << "`, call_index=`" << call_target.call_index_ << "`";
+  if (const auto* receiver_type = call_target.receiver_type()) {
+    out << ", receiver_type=`" << show(receiver_type) << "`";
+  }
   if (call_target.is_virtual()) {
-    out << ", receiver_type=`" << show(call_target.receiver_type())
-        << "`, overrides={";
+    out << ", overrides={";
     for (const auto* method : call_target.overrides()) {
       out << "`" << method->show() << "`, ";
     }
@@ -910,13 +994,15 @@ std::ostream& operator<<(std::ostream& out, const FieldTarget& field_target) {
 
 CallGraph::CallGraph(
     const Options& options,
-    Methods& method_factory,
-    Fields& field_factory,
     const Types& types,
     const ClassHierarchies& class_hierarchies,
-    Overrides& override_factory,
-    const FeatureFactory& feature_factory,
+    const LifecycleMethods& lifecycle_methods,
     const Shims& shims,
+    const FeatureFactory& feature_factory,
+    const Heuristics& heuristics,
+    Methods& method_factory,
+    Fields& field_factory,
+    Overrides& override_factory,
     MethodMappings& method_mappings)
     : types_(types),
       class_hierarchies_(class_hierarchies),
@@ -987,18 +1073,20 @@ CallGraph::CallGraph(
               auto instruction_information = process_instruction(
                   caller,
                   instruction,
+                  options,
+                  types,
+                  class_hierarchies,
+                  lifecycle_methods,
+                  shims,
+                  feature_factory,
+                  heuristics,
                   worklist,
                   processed,
-                  options,
                   method_factory,
                   field_factory,
-                  types,
                   override_factory,
-                  class_hierarchies,
-                  feature_factory,
-                  shims,
-                  sink_textual_order_index,
-                  method_mappings);
+                  method_mappings,
+                  sink_textual_order_index);
               if (instruction_information.artificial_callees.size() > 0) {
                 artificial_callees.emplace(
                     instruction, instruction_information.artificial_callees);
@@ -1044,10 +1132,8 @@ CallGraph::CallGraph(
   }
 
   if (options.dump_call_graph()) {
-    auto call_graph_path = options.call_graph_output_path();
-    LOG(1, "Writing call graph to `{}`", call_graph_path.native());
-    JsonValidation::write_json_file(
-        call_graph_path, to_json(/* with_overrides */ false));
+    dump_call_graph(
+        options.call_graph_output_path(), /* with_overrides */ false);
   }
 }
 
@@ -1119,6 +1205,8 @@ const ArtificialCallees& CallGraph::artificial_callees(
 const std::optional<FieldTarget> CallGraph::resolved_field_access(
     const Method* caller,
     const IRInstruction* instruction) const {
+  // Note that `find` is not thread-safe, but this is fine because
+  // `resolved_fields_` is read-only after the constructor completed.
   auto fields = resolved_fields_.find(caller);
   if (fields == resolved_fields_.end()) {
     return std::nullopt;
@@ -1134,6 +1222,8 @@ const std::optional<FieldTarget> CallGraph::resolved_field_access(
 
 const std::vector<FieldTarget> CallGraph::resolved_field_accesses(
     const Method* caller) const {
+  // Note that `find` is not thread-safe, but this is fine because
+  // `resolved_fields_` is read-only after the constructor completed.
   auto fields = resolved_fields_.find(caller);
   if (fields == resolved_fields_.end()) {
     return {};
@@ -1149,6 +1239,8 @@ const std::vector<FieldTarget> CallGraph::resolved_field_accesses(
 TextualOrderIndex CallGraph::return_index(
     const Method* caller,
     const IRInstruction* instruction) const {
+  // Note that `find` is not thread-safe, but this is fine because
+  // `indexed_returns_` is read-only after the constructor completed.
   auto returns = indexed_returns_.find(caller);
   mt_assert(returns != indexed_returns_.end());
 
@@ -1161,6 +1253,8 @@ TextualOrderIndex CallGraph::return_index(
 
 const std::vector<TextualOrderIndex> CallGraph::return_indices(
     const Method* caller) const {
+  // Note that `find` is not thread-safe, but this is fine because
+  // `indexed_returns_` is read-only after the constructor completed.
   auto returns = indexed_returns_.find(caller);
   mt_assert(returns != indexed_returns_.end());
 
@@ -1186,8 +1280,10 @@ TextualOrderIndex CallGraph::array_allocation_index(
 
 const std::vector<TextualOrderIndex> CallGraph::array_allocation_indices(
     const Method* caller) const {
+  // Note that `find` is not thread-safe, but this is fine because
+  // `indexed_array_allocations_` is read-only after the constructor completed.
   auto array_allocations = indexed_array_allocations_.find(caller);
-  mt_assert(array_allocations != indexed_returns_.end());
+  mt_assert(array_allocations != indexed_array_allocations_.end());
 
   std::vector<TextualOrderIndex> array_allocation_indices;
   for (const auto& [_, index] : array_allocations->second) {
@@ -1197,6 +1293,9 @@ const std::vector<TextualOrderIndex> CallGraph::array_allocation_indices(
 }
 
 bool CallGraph::has_callees(const Method* caller) {
+  // Note that `find` is not thread-safe, but this is fine because
+  // `resolved_base_callees_` and `artificial_callees_` are read-only
+  // after the constructor completed.
   auto base_callees = resolved_base_callees_.find(caller);
   if (base_callees != resolved_base_callees_.end() &&
       !base_callees->second.empty()) {
@@ -1211,14 +1310,15 @@ bool CallGraph::has_callees(const Method* caller) {
   return false;
 }
 
-Json::Value CallGraph::to_json(bool with_overrides) const {
-  auto value = Json::Value(Json::objectValue);
-  for (const auto& [method, callees] : resolved_base_callees_) {
-    auto method_value = Json::Value(Json::objectValue);
+Json::Value CallGraph::to_json(const Method* method, bool with_overrides)
+    const {
+  auto method_value = Json::Value(Json::objectValue);
 
+  auto resolved_callee = resolved_base_callees_.find(method);
+  if (resolved_callee != resolved_base_callees_.end()) {
     std::unordered_set<const Method*> static_callees;
     std::unordered_set<const Method*> virtual_callees;
-    for (const auto& [instruction, call_target] : callees) {
+    for (const auto& [instruction, call_target] : resolved_callee->second) {
       if (!call_target.resolved()) {
         continue;
       } else if (call_target.is_virtual()) {
@@ -1248,15 +1348,13 @@ Json::Value CallGraph::to_json(bool with_overrides) const {
       }
       method_value["virtual"] = virtual_callees_value;
     }
-
-    value[method->show()] = method_value;
   }
 
-  for (const auto& [method, instruction_artificial_callees] :
-       artificial_callees_) {
+  auto instruction_artificial_callees = artificial_callees_.find(method);
+  if (instruction_artificial_callees != artificial_callees_.end()) {
     std::unordered_set<const Method*> callees;
     for (const auto& [instruction, artificial_callees] :
-         instruction_artificial_callees) {
+         instruction_artificial_callees->second) {
       for (const auto& artificial_callee : artificial_callees) {
         callees.insert(artificial_callee.call_target.resolved_base_callee());
       }
@@ -1266,10 +1364,64 @@ Json::Value CallGraph::to_json(bool with_overrides) const {
     for (const auto* callee : callees) {
       callees_value.append(Json::Value(show(callee)));
     }
-    value[method->show()]["artificial"] = callees_value;
+    method_value["artificial"] = callees_value;
+  }
+
+  JsonValidation::validate_object(method_value);
+
+  return method_value;
+}
+
+Json::Value CallGraph::to_json(bool with_overrides) const {
+  auto value = Json::Value(Json::objectValue);
+  for (const auto& [method, _callees] : resolved_base_callees_) {
+    value[method->show()] = to_json(method, with_overrides);
+  }
+
+  // Add methods that only have artificial callees
+  for (const auto& [method, _callees] : artificial_callees_) {
+    if (resolved_base_callees_.find(method) == resolved_base_callees_.end()) {
+      value[method->show()] = to_json(method, with_overrides);
+    }
   }
 
   return value;
+}
+
+void CallGraph::dump_call_graph(
+    const std::filesystem::path& output_directory,
+    bool with_overrides,
+    const std::size_t batch_size) const {
+  LOG(1, "Writing call graph to `{}`", output_directory.native());
+
+  // Collect all methods in the callgraph
+  std::vector<const Method*> methods;
+  methods.reserve(resolved_base_callees_.size());
+  for (const auto& [method, _callees] : resolved_base_callees_) {
+    methods.push_back(method);
+  }
+
+  // Add methods that only have artificial callees
+  for (const auto& [method, _callees] : artificial_callees_) {
+    if (resolved_base_callees_.find(method) == resolved_base_callees_.end()) {
+      methods.push_back(method);
+    }
+  }
+  std::size_t total_elements = methods.size();
+
+  auto get_json_line = [&](std::size_t i) -> Json::Value {
+    auto value = Json::Value(Json::objectValue);
+    const auto* method = methods.at(i);
+    value[method->show()] = to_json(method, with_overrides);
+    return value;
+  };
+
+  JsonWriter::write_sharded_json_files(
+      output_directory,
+      batch_size,
+      total_elements,
+      "call-graph@",
+      get_json_line);
 }
 
 } // namespace marianatrench

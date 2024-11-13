@@ -32,6 +32,7 @@
 #include <mariana-trench/Method.h>
 #include <mariana-trench/OriginSet.h>
 #include <mariana-trench/Position.h>
+#include <mariana-trench/TaggedRootSet.h>
 
 namespace marianatrench {
 
@@ -47,7 +48,7 @@ class TaintConfig final {
  public:
   explicit TaintConfig(
       const Kind* kind,
-      AccessPath callee_port,
+      const AccessPath* callee_port,
       const Method* MT_NULLABLE callee,
       CallKind call_kind,
       const Position* MT_NULLABLE call_position,
@@ -56,15 +57,15 @@ class TaintConfig final {
       OriginSet origins,
       FeatureMayAlwaysSet inferred_features,
       FeatureSet user_features,
-      RootSetAbstractDomain via_type_of_ports,
-      RootSetAbstractDomain via_value_of_ports,
+      TaggedRootSet via_type_of_ports,
+      TaggedRootSet via_value_of_ports,
       CanonicalNameSetAbstractDomain canonical_names,
       PathTreeDomain output_paths,
       LocalPositionSet local_positions,
       FeatureMayAlwaysSet locally_inferred_features,
       ExtraTraceSet extra_traces)
       : kind_(kind),
-        callee_port_(std::move(callee_port)),
+        callee_port_(callee_port),
         callee_(callee),
         call_kind_(std::move(call_kind)),
         call_position_(call_position),
@@ -89,7 +90,9 @@ class TaintConfig final {
       mt_assert(!output_paths_.is_bottom());
       if (!call_kind_.is_propagation_with_trace()) {
         mt_assert(call_kind_.is_propagation());
-        mt_assert(callee_port_ == AccessPath(propagation_kind->root()));
+        mt_assert(
+            callee_port_ != nullptr &&
+            *callee_port_ == AccessPath(propagation_kind->root()));
       }
     } else {
       mt_assert(output_paths_.is_bottom());
@@ -124,7 +127,7 @@ class TaintConfig final {
     return kind_;
   }
 
-  const AccessPath& callee_port() const {
+  const AccessPath* MT_NULLABLE callee_port() const {
     return callee_port_;
   }
 
@@ -164,11 +167,11 @@ class TaintConfig final {
     return user_features_;
   }
 
-  const RootSetAbstractDomain& via_type_of_ports() const {
+  const TaggedRootSet& via_type_of_ports() const {
     return via_type_of_ports_;
   }
 
-  const RootSetAbstractDomain& via_value_of_ports() const {
+  const TaggedRootSet& via_value_of_ports() const {
     return via_value_of_ports_;
   }
 
@@ -192,12 +195,18 @@ class TaintConfig final {
     return callee_ == nullptr;
   }
 
+  /**
+   * Adds additional user features. Used at annotation feature instantiation to
+   * add additional user features from a normally created taint config.
+   */
+  void add_user_feature_set(const FeatureSet& feature_set);
+
   static TaintConfig from_json(const Json::Value& value, Context& context);
 
  private:
   /* Properties that are unique to a `Frame` within `Taint`. */
   const Kind* MT_NULLABLE kind_;
-  AccessPath callee_port_;
+  const AccessPath* MT_NULLABLE callee_port_;
   const Method* MT_NULLABLE callee_;
   CallKind call_kind_;
   const Position* MT_NULLABLE call_position_;
@@ -206,8 +215,8 @@ class TaintConfig final {
   OriginSet origins_;
   FeatureMayAlwaysSet inferred_features_;
   FeatureSet user_features_;
-  RootSetAbstractDomain via_type_of_ports_;
-  RootSetAbstractDomain via_value_of_ports_;
+  TaggedRootSet via_type_of_ports_;
+  TaggedRootSet via_value_of_ports_;
   CanonicalNameSetAbstractDomain canonical_names_;
   // These are used only for result and receiver sinks (should be bottom in all
   // other cases). They are used for propagation/sink inference in backward

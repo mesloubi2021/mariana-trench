@@ -5,16 +5,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#include <sstream>
-
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/range/adaptor/transformed.hpp>
 #include <fmt/format.h>
 
 #include <mariana-trench/Assert.h>
+#include <mariana-trench/JsonReaderWriter.h>
 #include <mariana-trench/JsonValidation.h>
-#include <mariana-trench/Log.h>
 #include <mariana-trench/Redex.h>
 
 namespace marianatrench {
@@ -28,7 +27,7 @@ std::string invalid_argument_message(
   auto field_information = field ? fmt::format(" for field `{}`", *field) : "";
   return fmt::format(
       "Error validating `{}`. Expected {}{}.",
-      boost::algorithm::trim_copy(JsonValidation::to_styled_string(value)),
+      boost::algorithm::trim_copy(JsonWriter::to_styled_string(value)),
       expected,
       field_information);
 }
@@ -85,6 +84,21 @@ std::string JsonValidation::string(
   return string.asString();
 }
 
+std::optional<std::string> JsonValidation::optional_string(
+    const Json::Value& value,
+    const std::string& field) {
+  validate_object(
+      value, fmt::format("non-null object with string field `{}`", field));
+  const auto& string = value[field];
+  if (string.isNull()) {
+    return std::nullopt;
+  }
+  if (!string.isString()) {
+    throw JsonValidationError(value, field, /* expected */ "string");
+  }
+  return string.asString();
+}
+
 int JsonValidation::integer(const Json::Value& value) {
   if (value.isNull() || !value.isInt()) {
     throw JsonValidationError(
@@ -120,6 +134,29 @@ std::optional<int> JsonValidation::optional_integer(
   return integer.asInt();
 }
 
+uint32_t JsonValidation::unsigned_integer(const Json::Value& value) {
+  if (value.isNull() || !value.isUInt()) {
+    throw JsonValidationError(
+        value,
+        /* field */ std::nullopt,
+        /* expected */ "unsigned integer (32-bit)");
+  }
+  return value.asUInt();
+}
+
+uint32_t JsonValidation::unsigned_integer(
+    const Json::Value& value,
+    const std::string& field) {
+  validate_object(
+      value,
+      fmt::format("non-null object with unsigned integer field `{}`", field));
+  const auto& integer = value[field];
+  if (integer.isNull() || !integer.isUInt()) {
+    throw JsonValidationError(value, field, /* expected */ "unsigned integer");
+  }
+  return integer.asUInt();
+}
+
 bool JsonValidation::boolean(const Json::Value& value) {
   if (value.isNull() || !value.isBool()) {
     throw JsonValidationError(
@@ -135,6 +172,22 @@ bool JsonValidation::boolean(
       value, fmt::format("non-null object with boolean field `{}`", field));
   const auto& boolean = value[field];
   if (boolean.isNull() || !boolean.isBool()) {
+    throw JsonValidationError(value, field, /* expected */ "boolean");
+  }
+  return boolean.asBool();
+}
+
+bool JsonValidation::optional_boolean(
+    const Json::Value& value,
+    const std::string& field,
+    bool default_value) {
+  validate_object(
+      value, fmt::format("non-null object with boolean field `{}`", field));
+  const auto& boolean = value[field];
+  if (boolean.isNull()) {
+    return default_value;
+  }
+  if (!boolean.isBool()) {
     throw JsonValidationError(value, field, /* expected */ "boolean");
   }
   return boolean.asBool();
@@ -209,134 +262,11 @@ const Json::Value& JsonValidation::object_or_string(
   return attribute;
 }
 
-DexType* JsonValidation::dex_type(const Json::Value& value) {
-  auto type_name = JsonValidation::string(value);
-  auto* type = redex::get_type(type_name);
-  if (!type) {
-    throw JsonValidationError(
-        value,
-        /* field */ std::nullopt,
-        /* expected */ "existing type name");
-  }
-  return type;
-}
-
-DexType* JsonValidation::dex_type(
+bool JsonValidation::has_field(
     const Json::Value& value,
     const std::string& field) {
-  auto type_name = JsonValidation::string(value, field);
-  auto* type = redex::get_type(type_name);
-  if (!type) {
-    throw JsonValidationError(
-        value,
-        field,
-        /* expected */ "existing type name");
-  }
-  return type;
-}
-
-DexFieldRef* JsonValidation::dex_field(const Json::Value& value) {
-  auto field_name = JsonValidation::string(value);
-  auto* dex_field = redex::get_field(field_name);
-  if (!dex_field) {
-    throw JsonValidationError(
-        value, /* field */ std::nullopt, /* expected */ "existing field name");
-  }
-  return dex_field;
-}
-
-DexFieldRef* JsonValidation::dex_field(
-    const Json::Value& value,
-    const std::string& field) {
-  auto field_name = JsonValidation::string(value, field);
-  auto* dex_field = redex::get_field(field_name);
-  if (!dex_field) {
-    throw JsonValidationError(
-        value, field, /* expected */ "existing field name");
-  }
-  return dex_field;
-}
-
-Json::Value JsonValidation::parse_json(std::string string) {
-  std::istringstream stream(std::move(string));
-
-  static const auto reader = Json::CharReaderBuilder();
-  std::string errors;
-  Json::Value json;
-
-  if (!Json::parseFromStream(reader, stream, &json, &errors)) {
-    throw std::invalid_argument(fmt::format("Invalid json: {}", errors));
-  }
-  return json;
-}
-
-Json::Value JsonValidation::parse_json_file(
-    const boost::filesystem::path& path) {
-  boost::filesystem::ifstream file;
-  file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-  try {
-    file.open(path, std::ios_base::binary);
-  } catch (const std::ifstream::failure&) {
-    ERROR(1, "Could not open json file: `{}`.", path.string());
-    throw;
-  }
-
-  static const auto reader = Json::CharReaderBuilder();
-  std::string errors;
-  Json::Value json;
-
-  if (!Json::parseFromStream(reader, file, &json, &errors)) {
-    throw std::invalid_argument(
-        fmt::format("File `{}` is not valid json: {}", path.string(), errors));
-  }
-  return json;
-}
-
-Json::Value JsonValidation::parse_json_file(const std::string& path) {
-  return parse_json_file(boost::filesystem::path(path));
-}
-
-namespace {
-
-Json::StreamWriterBuilder compact_writer_builder() {
-  Json::StreamWriterBuilder writer;
-  writer["indentation"] = "";
-  return writer;
-}
-
-Json::StreamWriterBuilder styled_writer_builder() {
-  Json::StreamWriterBuilder writer;
-  writer["indentation"] = "  ";
-  return writer;
-}
-
-} // namespace
-
-std::unique_ptr<Json::StreamWriter> JsonValidation::compact_writer() {
-  static const auto writer_builder = compact_writer_builder();
-  return std::unique_ptr<Json::StreamWriter>(writer_builder.newStreamWriter());
-}
-
-std::unique_ptr<Json::StreamWriter> JsonValidation::styled_writer() {
-  static const auto writer_builder = styled_writer_builder();
-  return std::unique_ptr<Json::StreamWriter>(writer_builder.newStreamWriter());
-}
-
-void JsonValidation::write_json_file(
-    const boost::filesystem::path& path,
-    const Json::Value& value) {
-  boost::filesystem::ofstream file;
-  file.exceptions(std::ofstream::failbit | std::ofstream::badbit);
-  file.open(path, std::ios_base::binary);
-  compact_writer()->write(value, &file);
-  file << "\n";
-  file.close();
-}
-
-std::string JsonValidation::to_styled_string(const Json::Value& value) {
-  std::ostringstream string;
-  styled_writer()->write(value, &string);
-  return string.str();
+  const auto& attribute = value[field];
+  return !attribute.isNull();
 }
 
 void JsonValidation::update_object(

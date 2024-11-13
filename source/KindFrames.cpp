@@ -15,6 +15,8 @@
 #include <mariana-trench/Log.h>
 #include <mariana-trench/OriginFactory.h>
 #include <mariana-trench/PathTreeDomain.h>
+#include <mariana-trench/TransformOperations.h>
+#include <mariana-trench/UsedKinds.h>
 
 namespace marianatrench {
 
@@ -161,6 +163,12 @@ void KindFrames::difference_with(const KindFrames& other) {
   }
 }
 
+std::size_t KindFrames::num_frames() const {
+  std::size_t count = 0;
+  this->visit([&count](const Frame&) { ++count; });
+  return count;
+}
+
 void KindFrames::append_to_propagation_output_paths(
     Path::Element path_element) {
   frames_.transform([path_element](Frame* frame) -> void {
@@ -190,12 +198,13 @@ const Kind* propagate_kind(const Kind* kind, Context& context) {
 
 CallClassIntervalContext propagate_interval(
     const Frame& frame,
+    const CallInfo& propagated_call_info,
     const CallClassIntervalContext& class_interval_context,
     const ClassIntervals::Interval& caller_class_interval) {
   const auto& frame_interval = frame.class_interval_context();
-  if (frame.call_kind().is_declaration()) {
-    // The source/sink declaration is the base case. Its propagated frame
-    // (caller -> callee with source/sink) should have the properties:
+  if (propagated_call_info.call_kind().is_origin()) {
+    // The source/sink declaration is the base case. Its propagated (origin)
+    // frame (caller -> callee with source/sink) should have the properties:
     //
     // 1. Propagated interval is that of the caller's class since the
     //    source/sink call occurs in the context of the caller's class.
@@ -226,23 +235,22 @@ CallClassIntervalContext propagate_interval(
 // argument.
 FeatureMayAlwaysSet propagate_features(
     const Frame& frame,
+    const CallInfo& propagated_call_info,
     const FeatureMayAlwaysSet& locally_inferred_features,
-    const Method* callee,
+    const Method* MT_NULLABLE callee,
     Context& context,
     const std::vector<const DexType * MT_NULLABLE>& source_register_types,
     const std::vector<std::optional<std::string>>& source_constant_arguments,
     FeatureSet& propagated_user_features,
     std::vector<const Feature*>& via_type_of_features_added) {
   auto propagated_local_features = locally_inferred_features;
-  if (frame.call_kind().is_declaration()) {
-    // If propagating a declaration, user features are kept as user features
-    // in the propagated frame(s). Inferred features are not expected on
-    // declarations.
+  if (propagated_call_info.call_kind().is_origin()) {
+    // Inferred features are not expected on an unpropagated declaration frame.
     mt_assert(
         frame.inferred_features().is_bottom() ||
         frame.inferred_features().empty());
     // User features should be propagated from the declaration frame in order
-    // for them to show up at the leaf frame (e.g. in the UI).
+    // for them to show up at the origin (leaf) frame (e.g. in the UI).
     propagated_user_features = frame.user_features();
   } else {
     // Otherwise, user features are considered part of the propagated set of
@@ -251,9 +259,11 @@ FeatureMayAlwaysSet propagate_features(
     propagated_user_features = FeatureSet::bottom();
   }
 
-  // Address clangtidy nullptr dereference warning. `callee` cannot actually
-  // be nullptr here in practice.
-  mt_assert(callee != nullptr);
+  // If the callee is nullptr (e.g. "call" to a field), there are no via-*
+  // ports to materialize
+  if (callee == nullptr) {
+    return propagated_local_features;
+  }
 
   // The via-type/value-of features are also treated as user features.
   // They need to show up on the frame in which they are materialized.
@@ -275,13 +285,17 @@ FeatureMayAlwaysSet propagate_features(
 
 CanonicalNameSetAbstractDomain propagate_canonical_names(
     const Frame& frame,
-    const Method* callee,
+    const Method* MT_NULLABLE callee,
     const std::vector<const Feature*>& via_type_of_features_added) {
   auto canonical_names = frame.canonical_names();
   if (!canonical_names.is_value() || canonical_names.elements().empty()) {
     // Non-crtex frame
     return CanonicalNameSetAbstractDomain{};
   }
+
+  // Callee should not be nullptr for CRTEX frames because models with
+  // canonical names are always defined on methods (as opposed to fields).
+  mt_assert(callee != nullptr);
 
   auto first_name = canonical_names.elements().begin();
   if (first_name->instantiated_value().has_value()) {
@@ -307,9 +321,8 @@ CanonicalNameSetAbstractDomain propagate_canonical_names(
 } // namespace
 
 KindFrames KindFrames::propagate(
-    const Method* callee,
-    const AccessPath& callee_port,
-    const Position* call_position,
+    const Method* MT_NULLABLE callee,
+    const CallInfo& propagated_call_info,
     const FeatureMayAlwaysSet& locally_inferred_features,
     int maximum_source_sink_distance,
     Context& context,
@@ -331,7 +344,10 @@ KindFrames KindFrames::propagate(
     }
 
     auto propagated_interval = propagate_interval(
-        frame, class_interval_context, caller_class_interval);
+        frame,
+        propagated_call_info,
+        class_interval_context,
+        caller_class_interval);
     if (propagated_interval.callee_interval().is_bottom()) {
       // Intervals do not intersect. Do not propagate this frame.
       continue;
@@ -341,6 +357,7 @@ KindFrames KindFrames::propagate(
     auto propagated_user_features = FeatureSet::bottom();
     auto propagated_inferred_features = propagate_features(
         frame,
+        propagated_call_info,
         locally_inferred_features,
         callee,
         context,
@@ -358,59 +375,34 @@ KindFrames KindFrames::propagate(
     mt_assert(propagated_canonical_names.is_value());
 
     // Propagate instantiated canonical names into origins.
-    // TODO(T163918472): Update Parser to determine callee from origins then
-    // set propagated_callee to nullptr.
     auto propagated_origins = frame.origins();
-    for (const auto& name : propagated_canonical_names.elements()) {
-      propagated_origins.add(context.origin_factory->crtex_origin(
-          /* canonical_name */ *name.instantiated_value(),
-          /* port */ context.access_path_factory->get(callee_port)));
-    }
+    propagated_origins.join_with(CanonicalName::propagate(
+        propagated_canonical_names, *propagated_call_info.callee_port()));
 
-    const auto* propagated_callee = callee;
     int propagated_distance = frame.distance() + 1;
-    auto call_kind = frame.call_kind();
-    if (!propagated_canonical_names.elements().empty()) {
-      // For CRTEX, frames with templated canonical names are declarations.
-      // The propagated frame is considered a leaf, hence distance = 0.
-      // If name instantiation failed (empty propagated_canonical_names), the
-      // frame acts like any non-declaration frame and the trace to the consumer
-      // CRTEX issue will be broken.
+    auto propagated_call_kind = propagated_call_info.call_kind();
+    if (propagated_call_kind.is_origin()) {
+      // Origins are the "leaf" of a trace and start at distance 0.
       propagated_distance = 0;
-    } else if (call_kind.is_declaration()) {
-      // When propagating a declaration, set the callee to nullptr explicitly to
-      // avoid emitting an invalid frame.
-      propagated_distance = 0;
-      propagated_callee = nullptr;
     }
     mt_assert(propagated_distance <= maximum_source_sink_distance);
 
     auto propagated_output_paths = PathTreeDomain::bottom();
-    if (call_kind.is_propagation_with_trace()) {
+    if (propagated_call_kind.is_propagation_with_trace()) {
       // Propagate the output paths for PropagationWithTrace frames.
       propagated_output_paths.join_with(frame.output_paths());
     }
 
-    CallKind propagated_call_kind = call_kind.propagate();
     if (propagated_distance > 0) {
       mt_assert(
           !propagated_call_kind.is_declaration() &&
           !propagated_call_kind.is_origin());
     } else {
-      // At distance 0, the propagated frame is typically an origin.
-      // However, if it is a CRTEX frame (identified by the "anchor" port), then
-      // it would be a callsite because CRTEX does not use "declaration" frames.
-      mt_assert(
-          propagated_call_kind.is_origin() ||
-          (callee_port.root().is_anchor() &&
-           propagated_call_kind.is_callsite()));
+      mt_assert(propagated_call_kind.is_origin());
     }
 
     auto propagated_frame = Frame(
         kind,
-        context.access_path_factory->get(callee_port),
-        propagated_callee,
-        call_position,
         propagated_interval,
         propagated_distance,
         propagated_origins,
@@ -419,7 +411,6 @@ KindFrames KindFrames::propagate(
         /* via_type_of_ports */ {},
         /* via_value_of_ports */ {},
         propagated_canonical_names,
-        propagated_call_kind,
         propagated_output_paths,
         /* extra_traces */ {});
 
@@ -436,11 +427,132 @@ KindFrames KindFrames::propagate(
   return KindFrames(kind, propagated_frames);
 }
 
+KindFrames KindFrames::add_sanitize_transform(
+    const Sanitizer& sanitizer,
+    const KindFactory& kind_factory,
+    const TransformsFactory& transforms_factory) const {
+  TransformList new_transforms{
+      std::vector{sanitizer.to_transform(transforms_factory)}};
+  const TransformList* global_transforms = nullptr;
+  const auto* base_kind = kind_;
+
+  mt_assert(base_kind != nullptr);
+
+  // Check and see if we can drop some taints here
+  // We use transforms::TransformDirection::Backward because this is always
+  // called right after backward taint transfer
+  if (new_transforms.sanitizes<TransformList::ApplicationDirection::Backward>(
+          base_kind, transforms::TransformDirection::Backward)) {
+    return KindFrames::bottom();
+  }
+
+  // Need a special case for TransformKind, since we need to append the
+  // local_transforms to the existing local transforms.
+  if (const auto* transform_kind = base_kind->as<TransformKind>()) {
+    const auto* existing_transforms = transform_kind->local_transforms();
+
+    //  TransformList::concat requires non-null transform lists.
+    if (existing_transforms != nullptr) {
+      new_transforms =
+          TransformList::concat(&new_transforms, existing_transforms);
+    }
+
+    global_transforms = transform_kind->global_transforms();
+    base_kind = transform_kind->base_kind();
+    new_transforms =
+        TransformList::canonicalize(&new_transforms, transforms_factory);
+  }
+
+  // Finally put the new transform list into the factory
+  const auto* local_transforms = transforms_factory.create(new_transforms);
+  mt_assert(local_transforms != nullptr);
+
+  const auto* new_kind = kind_factory.transform_kind(
+      base_kind, local_transforms, global_transforms);
+
+  return KindFrames::with_kind(new_kind);
+}
+
+KindFrames KindFrames::apply_transform(
+    const KindFactory& kind_factory,
+    const TransformsFactory& transforms_factory,
+    const UsedKinds& used_kinds,
+    const TransformList* local_transforms,
+    transforms::TransformDirection direction) const {
+  const Kind* base_kind = kind_;
+  const TransformList* global_transforms = nullptr;
+
+  // See if we can drop some taint here
+  if (local_transforms
+          ->sanitizes<TransformList::ApplicationDirection::Backward>(
+              kind_, direction)) {
+    return KindFrames::bottom();
+  }
+
+  if (const auto* transform_kind = kind_->as<TransformKind>()) {
+    auto existing_local_transforms = transform_kind->local_transforms();
+    global_transforms = transform_kind->global_transforms();
+    base_kind = transform_kind->base_kind();
+    TransformList temp_local_transforms = *local_transforms;
+
+    if (!base_kind->is<PropagationKind>()) {
+      temp_local_transforms = TransformList::discard_unmatched_sanitizers(
+          &temp_local_transforms, transforms_factory, direction);
+    }
+
+    if (temp_local_transforms.size() != 0 && global_transforms != nullptr &&
+        (existing_local_transforms == nullptr ||
+         !existing_local_transforms->has_non_sanitize_transform())) {
+      temp_local_transforms = TransformList::filter_global_sanitizers(
+          &temp_local_transforms, global_transforms, transforms_factory);
+    }
+
+    // Append existing local_transforms.
+    if (existing_local_transforms != nullptr) {
+      temp_local_transforms = TransformList::concat(
+          &temp_local_transforms, existing_local_transforms);
+    }
+
+    // Canonicalize the and create the local transform list from factory if the
+    // list is not empty
+    local_transforms = temp_local_transforms.size() != 0
+        ? transforms_factory.canonicalize(&temp_local_transforms)
+        : nullptr;
+
+  } else if (kind_->is<PropagationKind>()) {
+    // If the current kind is PropagationKind, set the transform as a global
+    // transform. This is done to track the next hops for propagation with
+    // trace.
+    global_transforms = local_transforms;
+    local_transforms = nullptr;
+  } else {
+    TransformList temp_local_transforms =
+        TransformList::discard_unmatched_sanitizers(
+            local_transforms, transforms_factory, direction);
+    // No need to apply anything if all transforms are sanitizers and are
+    // discarded
+    if (temp_local_transforms.size() == 0) {
+      return *this;
+    }
+
+    local_transforms = transforms_factory.canonicalize(&temp_local_transforms);
+  }
+
+  mt_assert(base_kind != nullptr);
+  const auto* new_kind = kind_factory.transform_kind(
+      base_kind, local_transforms, global_transforms);
+
+  if (!used_kinds.should_keep(new_kind)) {
+    return KindFrames::bottom();
+  }
+
+  return this->with_kind(new_kind);
+}
+
 void KindFrames::filter_invalid_frames(
-    const std::function<bool(const Method*, const AccessPath&, const Kind*)>&
-        is_valid) {
+    const std::function<bool(const Kind*)>& is_valid) {
   frames_.transform([&is_valid](Frame* frame) -> void {
-    if (!is_valid(frame->callee(), *frame->callee_port(), frame->kind())) {
+    if (!is_valid(frame->kind())) {
       frame->set_to_bottom();
     }
   });
@@ -455,10 +567,9 @@ bool KindFrames::contains_kind(const Kind* kind) const {
 
 KindFrames KindFrames::with_kind(const Kind* kind) const {
   KindFrames result;
-  for (const auto& frame : *this) {
-    auto frame_with_kind = frame.with_kind(kind);
-    result.add(frame_with_kind);
-  }
+  this->visit([&result, kind](const Frame& frame) {
+    result.add(frame.with_kind(kind));
+  });
   return result;
 }
 
@@ -466,6 +577,20 @@ void KindFrames::add_inferred_features(const FeatureMayAlwaysSet& features) {
   frames_.transform([&features](Frame* frame) -> void {
     frame->add_inferred_features(features);
   });
+}
+
+void KindFrames::collapse_class_intervals() {
+  FramesByInterval new_frames;
+  CallClassIntervalContext default_class_interval;
+
+  // Join all the frames and set class interval to default (top).
+  Frame new_frame;
+  for (const auto& [_interval, frame] : frames_.bindings()) {
+    new_frame.join_with(frame.with_interval(default_class_interval));
+  }
+
+  new_frames.set(default_class_interval, new_frame);
+  frames_ = std::move(new_frames);
 }
 
 std::ostream& operator<<(std::ostream& out, const KindFrames& frames) {

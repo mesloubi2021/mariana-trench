@@ -14,10 +14,12 @@
 
 #include <json/json.h>
 
+#include <sparta/utils/EnumBitSet.h>
+
 #include <mariana-trench/Access.h>
 #include <mariana-trench/Context.h>
 #include <mariana-trench/FeatureSet.h>
-#include <mariana-trench/Flags.h>
+#include <mariana-trench/Frame.h>
 #include <mariana-trench/IncludeMacros.h>
 #include <mariana-trench/Issue.h>
 #include <mariana-trench/IssueSet.h>
@@ -28,6 +30,7 @@
 #include <mariana-trench/Sanitizer.h>
 #include <mariana-trench/SetterAccessPathConstantDomain.h>
 #include <mariana-trench/Taint.h>
+#include <mariana-trench/TaintAccessPathTree.h>
 #include <mariana-trench/TaintTree.h>
 #include <mariana-trench/model-generator/ModelGeneratorNameSet.h>
 
@@ -85,6 +88,11 @@ using SanitizerSet = GroupHashedSetAbstractDomain<
  * *inline as setter* is either top, bottom or a target and value access path
  * that will be used to inline a setter method at call sites.
  *
+ * A user can specify *global config overrides* without specifying
+ * declared generation/parameter source/sink/propagation models. It is applied
+ * to _all supported_ TaintAccessPathTree fields (declared or inferred) in the
+ * model.
+ *
  * *model generators* is a set of model generator names that originated a part
  * of that model.
  */
@@ -92,48 +100,55 @@ class Model final {
  public:
   /**
    * A `Mode` describes a specific behavior of a model.
-   *
-   * Note that enumeration values must be a power of 2, see `Flags`.
    */
   enum class Mode : unsigned {
     // Skip the analysis of this method.
-    SkipAnalysis = 0x1,
+    SkipAnalysis,
 
     // Add the 'via-obscure' feature to sources flowing through this method.
-    AddViaObscureFeature = 0x2,
+    AddViaObscureFeature,
 
     // Taint-in-taint-out (taint on arguments flow into the return value).
-    TaintInTaintOut = 0x4,
+    TaintInTaintOut,
 
     // Taint-in-taint-this (taint on arguments flow into `this`).
-    TaintInTaintThis = 0x8,
+    TaintInTaintThis,
 
     // Do not join all overrides at virtual call sites.
-    NoJoinVirtualOverrides = 0x10,
+    NoJoinVirtualOverrides,
 
     // Do not collapse input paths when applying propagations.
-    NoCollapseOnPropagation = 0x40,
+    NoCollapseOnPropagation,
 
     // Alias existing memory location on method invokes.
-    AliasMemoryLocationOnInvoke = 0x80,
+    AliasMemoryLocationOnInvoke,
+
+    // Alias memory locations based on inferred propagations. Example: A
+    // propagation "argument(1) -> argument(0).$field" will mean "this.$field
+    // stores a reference to the object at argument(1)". Aliasing will treat
+    // their corresponding registers as pointing to the same memory locations.
+    AliasMemoryLocationOnPropagation,
 
     // Perform a strong write on propagation
-    StrongWriteOnPropagation = 0x100,
+    StrongWriteOnPropagation,
 
-    Normal = 0,
+    // Do not collapse when applying approximations
+    NoCollapseOnApproximate,
+
+    _Count,
   };
 
-  using Modes = Flags<Mode>;
+  using Modes = sparta::EnumBitSet<Mode>;
 
   enum class FreezeKind : unsigned {
-    None = 0,
-    Generations = 0x1,
-    ParameterSources = 0x2,
-    Sinks = 0x4,
-    Propagations = 0x8,
+    Generations,
+    ParameterSources,
+    Sinks,
+    Propagations,
+    _Count,
   };
 
-  using Frozen = Flags<FreezeKind>;
+  using Frozen = sparta::EnumBitSet<FreezeKind>;
 
  public:
   /* Create an empty model. */
@@ -145,8 +160,10 @@ class Model final {
   explicit Model(
       const Method* MT_NULLABLE method,
       Context& context,
-      Modes modes = Mode::Normal,
-      Frozen frozen = FreezeKind::None,
+      Modes modes = {},
+      Frozen frozen = {},
+      TaintTreeConfigurationOverrides global_config_overrides =
+          TaintTreeConfigurationOverrides::bottom(),
       const std::vector<std::pair<AccessPath, TaintConfig>>& generations = {},
       const std::vector<std::pair<AccessPath, TaintConfig>>& parameter_sources =
           {},
@@ -194,21 +211,35 @@ class Model final {
 
   void collapse_invalid_paths(Context& context);
 
-  void approximate(const FeatureMayAlwaysSet& widening_features);
+  void approximate(
+      const FeatureMayAlwaysSet& widening_features,
+      const Heuristics& heuristics);
 
   bool empty() const;
 
   void add_mode(Model::Mode mode, Context& context);
   void add_taint_in_taint_out(Context& context);
+
+  // Intended to be used for methods whose concrete definition is unknown,
+  // i.e. `dex_method_reference->is_def() == false`.
+  void add_taint_in_taint_out(
+      Context& context,
+      const IRInstruction* instruction);
+
   void add_taint_in_taint_this(Context& context);
 
-  void add_generation(const AccessPath& port, TaintConfig generation);
+  void add_generation(
+      const AccessPath& port,
+      TaintConfig generation,
+      const Heuristics& heuristics);
 
   /* Add generations after applying sanitizers */
   void add_inferred_generations(
       AccessPath port,
       Taint generations,
-      const FeatureMayAlwaysSet& widening_features);
+      const TaintTreeConfigurationOverrides& config_overrides,
+      const FeatureMayAlwaysSet& widening_features,
+      const Heuristics& heuristics);
   const TaintAccessPathTree& generations() const {
     return generations_;
   }
@@ -216,7 +247,10 @@ class Model final {
     generations_ = std::move(generations);
   }
 
-  void add_parameter_source(const AccessPath& port, TaintConfig source);
+  void add_parameter_source(
+      const AccessPath& port,
+      TaintConfig source,
+      const Heuristics& heuristics);
   const TaintAccessPathTree& parameter_sources() const {
     return parameter_sources_;
   }
@@ -224,13 +258,18 @@ class Model final {
     parameter_sources_ = std::move(parameter_sources);
   }
 
-  void add_sink(const AccessPath& port, TaintConfig sink);
+  void add_sink(
+      const AccessPath& port,
+      TaintConfig sink,
+      const Heuristics& heuristics);
 
   /* Add sinks after applying sanitizers */
   void add_inferred_sinks(
       AccessPath port,
       Taint sinks,
-      const FeatureMayAlwaysSet& widening_features);
+      const TaintTreeConfigurationOverrides& config_overrides,
+      const FeatureMayAlwaysSet& widening_features,
+      const Heuristics& heuristics);
   const TaintAccessPathTree& sinks() const {
     return sinks_;
   }
@@ -241,24 +280,40 @@ class Model final {
   const TaintAccessPathTree& call_effect_sources() const {
     return call_effect_sources_;
   }
-  void add_call_effect_source(AccessPath port, TaintConfig source);
+  void add_call_effect_source(
+      AccessPath port,
+      TaintConfig source,
+      const Heuristics& heuristics);
 
   const TaintAccessPathTree& call_effect_sinks() const {
     return call_effect_sinks_;
   }
-  void add_call_effect_sink(AccessPath port, TaintConfig sink);
-  void add_inferred_call_effect_sinks(AccessPath port, Taint sink);
+  void add_call_effect_sink(
+      AccessPath port,
+      TaintConfig sink,
+      const Heuristics& heuristics);
   void add_inferred_call_effect_sinks(
       AccessPath port,
       Taint sink,
-      const FeatureMayAlwaysSet& widening_features);
+      const Heuristics& heuristics);
+  void add_inferred_call_effect_sinks(
+      AccessPath port,
+      Taint sink,
+      const FeatureMayAlwaysSet& widening_features,
+      const Heuristics& heuristics);
 
-  void add_propagation(PropagationConfig propagation);
+  void add_propagation(
+      PropagationConfig propagation,
+      const Heuristics& heuristics);
   /* Add a propagation after applying sanitizers */
   void add_inferred_propagations(
       AccessPath input_path,
       Taint local_taint,
-      const FeatureMayAlwaysSet& widening_features);
+      const TaintTreeConfigurationOverrides& config_overrides,
+      const FeatureMayAlwaysSet& widening_features,
+      const Heuristics& heuristics,
+      const KindFactory& kind_factory,
+      const TransformsFactory& transforms_factory);
   const TaintAccessPathTree& propagations() const {
     return propagations_;
   }
@@ -283,6 +338,9 @@ class Model final {
   FeatureSet attach_to_propagations(Root root) const;
 
   void add_add_features_to_arguments(Root root, FeatureSet features);
+  void add_add_via_value_of_features_to_arguments(
+      Root root,
+      TaggedRootSet via_value_of_ports);
   bool has_add_features_to_arguments() const;
   FeatureSet add_features_to_arguments(Root root) const;
 
@@ -294,6 +352,17 @@ class Model final {
 
   void add_model_generator(const ModelGeneratorName* model_generator);
   void add_model_generator_if_empty(const ModelGeneratorName* model_generator);
+
+  // Converts all existing model generator (names) into their "sharded"
+  // equivalent. Used when loading from `Options::sharded_model_generators` to
+  // indicate that the original model generators are indirectly responsible for
+  // this model. The `identifier` is the directory name containing the models.
+  void make_sharded_model_generators(const std::string& identifier);
+
+  // When cached/sharded models are read, their class intervals are relative to
+  // the run in which they were generated. They are not compatible with the
+  // current run. Collapse/over-approximate all of them to top().
+  void collapse_class_intervals();
 
   void add_issue(Issue issue);
   const IssueSet& issues() const {
@@ -312,21 +381,68 @@ class Model final {
   bool no_join_virtual_overrides() const;
   bool no_collapse_on_propagation() const;
   bool alias_memory_location_on_invoke() const;
+  bool alias_memory_location_on_propagation() const;
   bool strong_write_on_propagation() const;
+  bool no_collapse_on_approximate() const;
   Modes modes() const {
     return modes_;
   }
 
   bool is_frozen(FreezeKind freeze_kind) const;
+  void freeze(FreezeKind freeze_kind);
 
   bool leq(const Model& other) const;
   void join_with(const Model& other);
 
-  static Model from_json(
+  std::unordered_set<const Kind*> source_kinds() const;
+  std::unordered_set<const Kind*> sink_kinds() const;
+
+  /**
+   * This method is used to detect the presence of specific taint transforms.
+   * Only local transforms are considered and returned because if something
+   * exists as a global transform, it would have came from a local transform
+   * somewhere else (in a different Model).
+   */
+  std::unordered_set<const Transform*> local_transform_kinds() const;
+
+  /**
+   * Parses the JSON from a user's configuration. The input JSON schema is not
+   * symmetrical to `to_json`, even if it looks somewhat similar. Use
+   * `from_json()` if symmetry is expected.
+   */
+  static Model from_config_json(
       const Method* MT_NULLABLE method,
       const Json::Value& value,
       Context& context,
       bool check_unexpected_members = true);
+
+  /**
+   * Helper to read all generations, parameter_sources and sinks type taint
+   * configs from the given JSON \p value. Only the configs which match
+   * \p predicate are extracted and inserted into \p generations,
+   * \p parameter_sources, and \p sinks respectively.
+   *
+   * @param value Model configuration JSON value.
+   * @param generations All extracted generations JSON taint configs.
+   * @param parameter_sources All extracted parameter_sources JSON taint
+   * configs.
+   * @param sinks All extracted sinks JSON taint configs.
+   * @param json_sources \see Model::from_json
+   * @param json_sinks \see Model::from_json
+   * @param predicate indicates which JSON config objects to extract. At the
+   * moment this is either TaintConfigTemplate::is_concrete to extract all JSON
+   * configs which can be directly added to the model, or
+   * TaintConfigTemplate::is_template to extract the taint configs which need
+   * to be stored in ModelTemplate for later instantiation.
+   */
+  static void read_taint_configs_from_json(
+      const Json::Value& model,
+      std::vector<std::pair<AccessPath, Json::Value>>& generations,
+      std::vector<std::pair<AccessPath, Json::Value>>& parameter_sources,
+      std::vector<std::pair<AccessPath, Json::Value>>& sinks,
+      bool (*predicate)(const Json::Value& value));
+
+  static Model from_json(const Json::Value& value, Context& context);
   Json::Value to_json(ExportOriginsMode export_origins_mode) const;
 
   /* Export the model to json and include the method position. */
@@ -349,7 +465,7 @@ class Model final {
   bool check_taint_config_consistency(
       const TaintConfig& frame,
       std::string_view kind) const;
-  bool check_taint_consistency(const Taint& frame, std::string_view kind) const;
+  bool check_taint_consistency(const Taint& frame) const;
   bool check_inline_as_getter_consistency(
       const AccessPathConstantDomain& inline_as) const;
   bool check_inline_as_setter_consistency(
@@ -362,17 +478,36 @@ class Model final {
   // `Model` object. This guarantees that it was constructed using a
   // `TaintConfig` in `Model`'s constructor, and has passed other verification
   // checks in the `add_*(AccessPath, TaintConfig)` methods.
-  void add_generation(AccessPath port, Taint generation);
-  void add_parameter_source(AccessPath port, Taint source);
-  void add_sink(AccessPath port, Taint sink);
-  void add_call_effect_source(AccessPath port, Taint source);
-  void add_call_effect_sink(AccessPath port, Taint sink);
-  void add_propagation(AccessPath input_path, Taint output);
+  void add_generation(
+      AccessPath port,
+      Taint generation,
+      const Heuristics& heuristics);
+  void add_parameter_source(
+      AccessPath port,
+      Taint source,
+      const Heuristics& heuristics);
+  void add_sink(AccessPath port, Taint sink, const Heuristics& heuristics);
+  void add_call_effect_source(
+      AccessPath port,
+      Taint source,
+      const Heuristics& heuristics);
+  void add_call_effect_sink(
+      AccessPath port,
+      Taint sink,
+      const Heuristics& heuristics);
+  void add_propagation(
+      AccessPath input_path,
+      Taint output,
+      const Heuristics& heuristics);
+
+  void apply_config_overrides(
+      const TaintTreeConfigurationOverrides& config_overrides);
 
  private:
   const Method* MT_NULLABLE method_;
   Modes modes_;
   Frozen frozen_;
+  TaintTreeConfigurationOverrides global_config_overrides_;
   TaintAccessPathTree generations_;
   TaintAccessPathTree parameter_sources_;
   TaintAccessPathTree sinks_;
@@ -385,6 +520,8 @@ class Model final {
   RootPatriciaTreeAbstractPartition<FeatureSet> attach_to_sinks_;
   RootPatriciaTreeAbstractPartition<FeatureSet> attach_to_propagations_;
   RootPatriciaTreeAbstractPartition<FeatureSet> add_features_to_arguments_;
+  RootPatriciaTreeAbstractPartition<TaggedRootSet>
+      add_via_value_of_features_to_arguments_;
   AccessPathConstantDomain inline_as_getter_;
   SetterAccessPathConstantDomain inline_as_setter_;
   ModelGeneratorNameSet model_generators_;
@@ -404,7 +541,7 @@ inline Model::Frozen operator|(
 std::string model_mode_to_string(Model::Mode mode);
 std::optional<Model::Mode> string_to_model_mode(const std::string& mode);
 
-constexpr std::array<Model::Mode, 8> k_all_modes = {
+constexpr std::array<Model::Mode, 10> k_all_modes = {
     Model::Mode::SkipAnalysis,
     Model::Mode::AddViaObscureFeature,
     Model::Mode::TaintInTaintOut,
@@ -412,7 +549,9 @@ constexpr std::array<Model::Mode, 8> k_all_modes = {
     Model::Mode::NoJoinVirtualOverrides,
     Model::Mode::NoCollapseOnPropagation,
     Model::Mode::AliasMemoryLocationOnInvoke,
+    Model::Mode::AliasMemoryLocationOnPropagation,
     Model::Mode::StrongWriteOnPropagation,
+    Model::Mode::NoCollapseOnApproximate,
 };
 
 constexpr std::array<Model::FreezeKind, 4> k_all_freeze_kinds = {

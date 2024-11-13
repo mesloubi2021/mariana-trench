@@ -57,6 +57,11 @@ class MultiSourceMultiSinkRule final : public Rule {
 
   bool uses(const Kind*) const override;
 
+  std::optional<CoveredRule> coverage(
+      const KindSet& sources,
+      const KindSet& sinks,
+      const TransformSet& transforms) const override;
+
   static std::unique_ptr<Rule> from_json(
       const std::string& name,
       int code,

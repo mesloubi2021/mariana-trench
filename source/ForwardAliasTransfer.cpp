@@ -6,6 +6,7 @@
  */
 
 #include <mariana-trench/ForwardAliasTransfer.h>
+#include <mariana-trench/KotlinHeuristics.h>
 #include <mariana-trench/Log.h>
 #include <mariana-trench/TransferCall.h>
 
@@ -46,12 +47,12 @@ bool ForwardAliasTransfer::analyze_check_cast(
   log_instruction(context, instruction);
   mt_assert(instruction->srcs_size() == 1);
 
-  // We want to consider the cast as creating a different memory location,
-  // so it can have a different taint.
-  auto memory_location = context->memory_factory.make_location(instruction);
+  // check-cast acts as a passthrough for the input register.
+  auto input_memory_locations =
+      environment->memory_locations(instruction->src(0));
   LOG_OR_DUMP(
-      context, 4, "Setting result register to {}", show(memory_location));
-  environment->assign(k_result_register, memory_location);
+      context, 4, "Setting result register to {}", input_memory_locations);
+  environment->assign(k_result_register, input_memory_locations);
 
   return false;
 }
@@ -186,7 +187,16 @@ SetterAccessPathConstantDomain infer_field_write(
   }
   MemoryLocation* value_memory_location = *value_memory_location_singleton;
   auto value_access_path = value_memory_location->access_path();
+
   if (!value_access_path) {
+    return SetterAccessPathConstantDomain::top();
+  }
+
+  // If size of access_path is greater than the max input path size of the
+  // propagation taint tree, it is not safe to inline_as_setter and can lead
+  // to invalid trees.
+  if (value_access_path->path().size() >
+      context->heuristics.propagation_max_input_path_size()) {
     return SetterAccessPathConstantDomain::top();
   }
 
@@ -204,6 +214,14 @@ SetterAccessPathConstantDomain infer_field_write(
 
   auto* field_name = instruction->get_field()->get_name();
   target_access_path->append(PathElement::field(field_name));
+
+  // If size of access_path is greater than the max output path size of the
+  // propagation taint tree, it is not safe to inline_as_setter and can lead
+  // to invalid trees.
+  if (target_access_path->path().size() >
+      context->heuristics.propagation_max_output_path_size()) {
+    return SetterAccessPathConstantDomain::top();
+  }
 
   auto setter = SetterAccessPath(
       /* target */ *target_access_path,
@@ -329,7 +347,9 @@ bool ForwardAliasTransfer::analyze_aget(
 
 namespace {
 
-bool has_side_effect(const MethodItemEntry& instruction) {
+bool has_side_effect_with_heuristics(
+    const MethodContext* context,
+    const MethodItemEntry& instruction) {
   switch (instruction.type) {
     case MFLOW_OPCODE:
       switch (instruction.insn->opcode()) {
@@ -360,6 +380,22 @@ bool has_side_effect(const MethodItemEntry& instruction) {
         case OPCODE_IGET_CHAR:
         case OPCODE_IGET_SHORT:
           return false;
+
+        case OPCODE_CONST_STRING:
+          return KotlinHeuristics::const_string_has_side_effect(
+              instruction.insn);
+
+        case OPCODE_INVOKE_STATIC: {
+          auto call_target =
+              context->call_graph.callee(context->method(), instruction.insn);
+          if (auto* resolved_callee = call_target.resolved_base_callee()) {
+            return KotlinHeuristics::method_has_side_effects(
+                resolved_callee->dex_method());
+          }
+          // Call could not be resolved. Default to has side-effects.
+          return true;
+        }
+
         default:
           return true;
       }
@@ -402,8 +438,8 @@ bool is_safe_to_inline(MethodContext* context, bool allow_iput) {
   auto found = std::find_if(
       entry_block->begin(),
       entry_block->end(),
-      [allow_iput](const auto& instruction) {
-        return has_side_effect(instruction) &&
+      [allow_iput, context](const auto& instruction) {
+        return has_side_effect_with_heuristics(context, instruction) &&
             (!allow_iput || !is_iput_instruction(instruction));
       });
   if (found != entry_block->end()) {
@@ -434,6 +470,14 @@ AccessPathConstantDomain infer_inline_as_getter(
   MemoryLocation* memory_location = *memory_location_singleton;
   auto access_path = memory_location->access_path();
   if (!access_path) {
+    return AccessPathConstantDomain::top();
+  }
+
+  // If size of access_path is greater than the max input path size of the
+  // propagation taint tree, it is not safe to inline_as_getter and can lead to
+  // invalid trees.
+  if (access_path->path().size() >
+      context->heuristics.propagation_max_input_path_size()) {
     return AccessPathConstantDomain::top();
   }
 

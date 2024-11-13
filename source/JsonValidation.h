@@ -11,7 +11,6 @@
 #include <string>
 #include <unordered_set>
 
-#include <boost/filesystem.hpp>
 #include <json/json.h>
 
 #include <DexClass.h>
@@ -28,6 +27,8 @@ class JsonValidationError : public std::invalid_argument {
 
 class JsonValidation final {
  public:
+  static constexpr std::size_t k_default_shard_limit = 10000;
+
   static void validate_object(const Json::Value& value);
   static void validate_object(
       const Json::Value& value,
@@ -39,6 +40,9 @@ class JsonValidation final {
 
   static std::string string(const Json::Value& value);
   static std::string string(const Json::Value& value, const std::string& field);
+  static std::optional<std::string> optional_string(
+      const Json::Value& value,
+      const std::string& field);
 
   static int integer(const Json::Value& value);
   static int integer(const Json::Value& value, const std::string& field);
@@ -46,8 +50,17 @@ class JsonValidation final {
       const Json::Value& value,
       const std::string& field);
 
+  static uint32_t unsigned_integer(const Json::Value& value);
+  static uint32_t unsigned_integer(
+      const Json::Value& value,
+      const std::string& field);
+
   static bool boolean(const Json::Value& value);
   static bool boolean(const Json::Value& value, const std::string& field);
+  static bool optional_boolean(
+      const Json::Value& value,
+      const std::string& field,
+      bool default_value);
 
   static const Json::Value& null_or_array(const Json::Value& value);
   static const Json::Value& null_or_array(
@@ -67,24 +80,7 @@ class JsonValidation final {
       const Json::Value& value,
       const std::string& field);
 
-  static DexType* dex_type(const Json::Value& value);
-  static DexType* dex_type(const Json::Value& value, const std::string& field);
-
-  static DexFieldRef* dex_field(const Json::Value& value);
-  static DexFieldRef* dex_field(
-      const Json::Value& value,
-      const std::string& field);
-
-  static Json::Value parse_json(std::string string);
-  static Json::Value parse_json_file(const boost::filesystem::path& path);
-  static Json::Value parse_json_file(const std::string& path);
-
-  static std::unique_ptr<Json::StreamWriter> compact_writer();
-  static std::unique_ptr<Json::StreamWriter> styled_writer();
-  static void write_json_file(
-      const boost::filesystem::path& path,
-      const Json::Value& value);
-  static std::string to_styled_string(const Json::Value& value);
+  static bool has_field(const Json::Value& value, const std::string& field);
 
   /**
    * Add (key, value) pairs from the given `right` object into the given `left`
