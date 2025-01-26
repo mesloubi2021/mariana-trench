@@ -44,8 +44,9 @@ class CallGraphTest : public test::Test {};
 TEST_F(CallGraphTest, CallIndices) {
   Scope scope;
 
-  auto* dex_callee = redex::create_void_method(scope, "LUtil;", "call");
-  auto* inherited_dex_method = redex::create_void_method(
+  auto* dex_callee =
+      marianatrench::redex::create_void_method(scope, "LUtil;", "call");
+  auto* inherited_dex_method = marianatrench::redex::create_void_method(
       scope,
       "LParent;",
       "inherited_method",
@@ -53,15 +54,16 @@ TEST_F(CallGraphTest, CallIndices) {
       /* return_type */ "V",
       /* super */ nullptr,
       /* is_static */ true);
-  redex::create_class(
+  marianatrench::redex::create_class(
       scope,
       "LChild1;",
       /* super */ inherited_dex_method->get_class());
-  redex::create_class(
+  marianatrench::redex::create_class(
       scope,
       "LChild2;",
       /* super */ inherited_dex_method->get_class());
-  auto* dex_method = redex::create_method(scope, "LMainActivity;", R"(
+  auto* dex_method =
+      marianatrench::redex::create_method(scope, "LMainActivity;", R"(
     (method (public) "LMainActivity;.onCreate:()V"
      (
       (load-param-object v0)
@@ -113,8 +115,8 @@ TEST_F(CallGraphTest, CallIndices) {
 TEST_F(CallGraphTest, ArtificialCallIndices) {
   Scope scope;
 
-  redex::create_void_method(scope, "LUtil;", "call");
-  auto anonymous_class_callees = redex::create_methods(
+  marianatrench::redex::create_void_method(scope, "LUtil;", "call");
+  auto anonymous_class_callees = marianatrench::redex::create_methods(
       scope,
       "LMainActivity$1;",
       {R"(
@@ -133,7 +135,7 @@ TEST_F(CallGraphTest, ArtificialCallIndices) {
           (return-void)
         ))
     )"});
-  auto anonymous_class_for_iput_callees = redex::create_methods(
+  auto anonymous_class_for_iput_callees = marianatrench::redex::create_methods(
       scope,
       "LMainActivity$2;",
       {R"(
@@ -156,7 +158,7 @@ TEST_F(CallGraphTest, ArtificialCallIndices) {
   // When a method with no code (external method/abstract method) gets an
   // anonymous class as a callee, then we add artificial calls to all of its
   // methods
-  redex::create_void_method(
+  marianatrench::redex::create_void_method(
       scope,
       "LThing;",
       "method",
@@ -168,7 +170,8 @@ TEST_F(CallGraphTest, ArtificialCallIndices) {
       /* is_native */ false,
       /* is_abstract */ true);
 
-  auto* dex_method = redex::create_method(scope, "LMainActivity;", R"(
+  auto* dex_method =
+      marianatrench::redex::create_method(scope, "LMainActivity;", R"(
     (method (public) "LMainActivity;.onCreate:()V"
      (
       (load-param-object v0)
@@ -237,8 +240,8 @@ TEST_F(CallGraphTest, ShimCallIndices) {
   Scope scope;
 
   auto dex_shimmed_method1 =
-      redex::create_void_method(scope, "LShimmed1;", "method");
-  auto dex_shimmed_method2 = redex::create_void_method(
+      marianatrench::redex::create_void_method(scope, "LShimmed1;", "method");
+  auto dex_shimmed_method2 = marianatrench::redex::create_void_method(
       scope,
       "LShimmed2;",
       "static_method",
@@ -248,10 +251,11 @@ TEST_F(CallGraphTest, ShimCallIndices) {
       /* is_static */ true);
 
   // Note: shim is defined in file: tests/shims.json
-  redex::create_void_method(
+  marianatrench::redex::create_void_method(
       scope, "LExample;", "methodToShim", /* parameter_types */ "LShimmed1;");
 
-  auto* dex_method = redex::create_method(scope, "LMainActivity;", R"(
+  auto* dex_method =
+      marianatrench::redex::create_method(scope, "LMainActivity;", R"(
     (method (public) "LMainActivity;.onCreate:()V"
      (
       (load-param-object v0)
@@ -310,20 +314,21 @@ TEST_F(CallGraphTest, ShimCallIndices) {
 
 TEST_F(CallGraphTest, FieldIndices) {
   Scope scope;
-  auto* dex_inherited_field = redex::create_field(
+  auto* dex_inherited_field = marianatrench::redex::create_field(
       scope, "LParent;", {"mInherited", type::java_lang_Object()});
-  redex::create_class(
+  marianatrench::redex::create_class(
       scope, "LChild1;", /* super */ dex_inherited_field->get_class());
-  redex::create_class(
+  marianatrench::redex::create_class(
       scope, "LChild2;", /* super */ dex_inherited_field->get_class());
-  auto* dex_static_field = redex::create_field(
+  auto* dex_static_field = marianatrench::redex::create_field(
       scope,
       "LClass;",
       {"mStatic", type::java_lang_Object()},
       /* super */ nullptr,
       /* is_static */ true);
 
-  auto* dex_method = redex::create_method(scope, "LMainActivity;", R"(
+  auto* dex_method =
+      marianatrench::redex::create_method(scope, "LMainActivity;", R"(
     (method (public) "LMainActivity;.onCreate:()V"
      (
       (load-param-object v0)
@@ -369,9 +374,10 @@ TEST_F(CallGraphTest, FieldIndices) {
 
 TEST_F(CallGraphTest, ReturnIndices) {
   Scope scope;
-  redex::create_class(
+  marianatrench::redex::create_class(
       scope, "LSomething;", /* super */ type::java_lang_Object());
-  auto* dex_method = redex::create_method(scope, "LMainActivity;", R"(
+  auto* dex_method =
+      marianatrench::redex::create_method(scope, "LMainActivity;", R"(
     (method (public) "LMainActivity;.someMethod:(I)Ljava/lang/Object;"
      (
       (load-param v4)
@@ -406,9 +412,10 @@ TEST_F(CallGraphTest, ReturnIndices) {
 
 TEST_F(CallGraphTest, ArrayAllocation) {
   Scope scope;
-  redex::create_class(
+  marianatrench::redex::create_class(
       scope, "LSomething;", /* super */ type::java_lang_Object());
-  auto* dex_method = redex::create_method(scope, "LMainActivity;", R"(
+  auto* dex_method =
+      marianatrench::redex::create_method(scope, "LMainActivity;", R"(
     (method (public) "LMainActivity;.someMethod:()V"
      (
       (load-param v0)
@@ -449,6 +456,177 @@ TEST_F(CallGraphTest, ArrayAllocation) {
       array_allocation_indices.end(),
       expected_array_allocation_indices.begin(),
       expected_array_allocation_indices.end()));
+}
+
+TEST_F(CallGraphTest, VirtualCalleeStats) {
+  Scope scope;
+
+  marianatrench::redex::create_void_method(scope, "LUtil;", "call");
+  auto* inherited_dex_method = marianatrench::redex::create_void_method(
+      scope,
+      "LParent;",
+      "inherited_method",
+      /* parameter_types */ "",
+      /* return_type */ "V",
+      /* super */ nullptr);
+  marianatrench::redex::create_void_method(
+      scope,
+      "LChild1;",
+      "inherited_method",
+      /* parameter_types */ "",
+      /* return_type */ "V",
+      /* super */ inherited_dex_method->get_class());
+  marianatrench::redex::create_void_method(
+      scope,
+      "LChild2;",
+      "inherited_method",
+      /* parameter_types */ "",
+      /* return_type */ "V",
+      /* super */ inherited_dex_method->get_class());
+  marianatrench::redex::create_method(scope, "LMainActivity;", R"(
+    (method (public) "LMainActivity;.onCreate:(LParent;LChild1;)V"
+     (
+      (load-param-object v0)
+      (load-param-object v1)
+      (load-param-object v2)
+      (invoke-virtual (v1) "LParent;.unresolved_method:()V")
+      (invoke-direct (v0) "LUtil;.call:()V")
+      (invoke-direct (v2) "LParent;.inherited_method:()V")
+      (invoke-virtual (v2) "LChild1;.inherited_method:()V")
+      (invoke-virtual (v2) "LChild1;.inherited_method:()V")
+      (invoke-virtual (v1) "LParent;.inherited_method:()V")
+      (invoke-virtual (v1) "LParent;.inherited_method:()V")
+      (invoke-virtual (v2) "LChild1;.inherited_method:()V")
+      (return-void)
+     )
+    )
+  )");
+  DexStore store("stores");
+  store.add_classes(scope);
+
+  auto context = test::make_context(store);
+  {
+    auto stats = context.call_graph->compute_stats(/* override_threshold */ 2);
+
+    EXPECT_EQ(stats.virtual_callsites_stats.total, 5);
+    // The first 3 call-sites are ignored (unresolved or not virtual).
+    // Calls to Parent.*() resolve to 3 targets (Parent, Child1, Child2).
+    // Calls to Child1.*() resolve to 1 target.
+    // Histogram of num targets per call-site: [1, 1, 3, 3, 1]
+    EXPECT_DOUBLE_EQ(stats.virtual_callsites_stats.average, 9 / 5.0);
+    EXPECT_EQ(stats.virtual_callsites_stats.p50, 1);
+    EXPECT_EQ(stats.virtual_callsites_stats.p90, 3);
+    EXPECT_EQ(stats.virtual_callsites_stats.p99, 3);
+    EXPECT_EQ(stats.virtual_callsites_stats.min, 1);
+    EXPECT_EQ(stats.virtual_callsites_stats.max, 3);
+    EXPECT_DOUBLE_EQ(
+        stats.virtual_callsites_stats.percentage_above_threshold,
+        100 * 2 / 5.0);
+  }
+
+  {
+    // Verify with smaller override threshold.
+    auto stats = context.call_graph->compute_stats(/* override_threshold */ 0);
+    EXPECT_DOUBLE_EQ(
+        stats.virtual_callsites_stats.percentage_above_threshold, 100);
+  }
+
+  {
+    // Verify with larger override threshold.
+    auto stats = context.call_graph->compute_stats(/* override_threshold */ 4);
+    EXPECT_DOUBLE_EQ(
+        stats.virtual_callsites_stats.percentage_above_threshold, 0);
+  }
+
+  {
+    // Verify override threshold is exclusive, i.e. strictly > 3.
+    auto stats = context.call_graph->compute_stats(/* override_threshold */ 3);
+    EXPECT_DOUBLE_EQ(
+        stats.virtual_callsites_stats.percentage_above_threshold, 0);
+  }
+}
+
+TEST_F(CallGraphTest, ArtificialCalleeStats) {
+  Scope scope;
+
+  marianatrench::redex::create_void_method(scope, "LUtil;", "call");
+  marianatrench::redex::create_methods(
+      scope,
+      "LMainActivity$1;",
+      {R"(
+        (method (public) "LMainActivity$1;.method1:()V"
+        (
+          (load-param-object v0)
+          (invoke-direct (v0) "Ljava/lang/Object;.<init>:()V")
+          (return-void)
+        ))
+      )",
+       R"(
+        (method (public) "LMainActivity$1;.method2:()V"
+        (
+          (load-param-object v0)
+          (invoke-direct (v0) "LUtil;.call:()V")
+          (return-void)
+        ))
+    )"});
+  marianatrench::redex::create_methods(scope, "LMainActivity$2;", {R"(
+        (method (public) "LMainActivity$2;.method3:()V"
+        (
+          (load-param-object v0)
+          (invoke-direct (v0) "Ljava/lang/Object;.<init>:()V")
+          (return-void)
+        ))
+      )"});
+
+  // When a method with no code (external method/abstract method) gets an
+  // anonymous class as a callee, artificial calls to all of its methods are
+  // created.
+  // Assigning an anonymous class to a field also creates artificial callees.
+  marianatrench::redex::create_void_method(
+      scope,
+      "LThing;",
+      "method",
+      /* parameter_types */ "LRunnable;",
+      /* return_type */ "V",
+      /* super */ nullptr,
+      /* is_static */ true,
+      /* is_private */ false,
+      /* is_native */ false,
+      /* is_abstract */ true);
+  marianatrench::redex::create_method(scope, "LMainActivity;", R"(
+    (method (public) "LMainActivity;.onCreate:()V"
+     (
+      (load-param-object v0)
+      (new-instance "LMainActivity$1;")
+      (move-result-pseudo-object v1)
+      (invoke-static (v1) "LThing;.method:(LRunnable;)V")
+      (invoke-static (v1) "LThing;.method:(LRunnable;)V")
+      (new-instance "LMainActivity$2;")
+      (move-result-pseudo-object v2)
+      (invoke-static (v2) "LThing;.method:(LRunnable;)V")
+      (invoke-static (v2) "LThing;.method:(LRunnable;)V")
+      (iput-object v2 v0 "LMainActivity;.field:Ljava/jang/Object;")
+      (return-void)
+     )
+    )
+  )");
+  DexStore store("stores");
+  store.add_classes(scope);
+
+  auto context = test::make_context(store);
+  auto stats = context.call_graph->compute_stats(/* override_threshold */ 5);
+
+  // 5 callsites with artificial callees: four invokes and one iput.
+  // Histogram: [2, 2, 1, 1, 1]
+  EXPECT_EQ(stats.artificial_callsites_stats.total, 5);
+  EXPECT_DOUBLE_EQ(stats.artificial_callsites_stats.average, 7 / 5.0);
+  EXPECT_EQ(stats.artificial_callsites_stats.p50, 1);
+  EXPECT_EQ(stats.artificial_callsites_stats.p90, 2);
+  EXPECT_EQ(stats.artificial_callsites_stats.p99, 2);
+  EXPECT_EQ(stats.artificial_callsites_stats.min, 1);
+  EXPECT_EQ(stats.artificial_callsites_stats.max, 2);
+  EXPECT_DOUBLE_EQ(
+      stats.artificial_callsites_stats.percentage_above_threshold, 0);
 }
 
 } // namespace marianatrench

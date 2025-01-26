@@ -866,7 +866,7 @@ bool BackwardTaintTransfer::analyze_invoke(
       context,
       aliasing,
       environment,
-      instruction->srcs_vec(),
+      instruction->srcs_copy(),
       callee,
       source_constant_arguments,
       /* extra_features */ {},
@@ -946,7 +946,7 @@ bool BackwardTaintTransfer::analyze_iput(
 
   check_artificial_calls_flows(context, aliasing, instruction, environment);
 
-  auto* field_name = instruction->get_field()->get_name();
+  const auto* field_name = instruction->get_field()->get_name();
   auto target_memory_locations =
       aliasing.register_memory_locations(instruction->src(1));
 

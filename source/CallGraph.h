@@ -226,6 +226,40 @@ struct FieldTarget {
   friend std::ostream& operator<<(std::ostream& out, const FieldTarget& callee);
 };
 
+struct CallGraphStats {
+  struct StatTypes {
+    std::size_t total = 0;
+    double average = 0;
+    std::size_t p50 = 0;
+    std::size_t p90 = 0;
+    std::size_t p99 = 0;
+    std::size_t min = 0;
+    std::size_t max = 0;
+
+    // Fraction of values that exceed a given threshold. The threshold value
+    // depends on the stat type.
+    double percentage_above_threshold = 0;
+  };
+
+  CallGraphStats(
+      const ConcurrentMap<
+          const Method*,
+          std::unordered_map<const IRInstruction*, CallTarget>>&
+          resolved_base_callees,
+      ConcurrentMap<
+          const Method*,
+          std::unordered_map<const IRInstruction*, ArtificialCallees>>
+          artificial_callees,
+      int join_override_threshold);
+
+ public:
+  // Stats computed based on resolved_base_callees_ (actual callsites)
+  StatTypes virtual_callsites_stats;
+  // Stats computed based on artificial_callees_ (user-defined shims and calls
+  // to anonymous class methods)
+  StatTypes artificial_callsites_stats;
+};
+
 class CallGraph final {
  public:
   explicit CallGraph(
@@ -300,6 +334,9 @@ class CallGraph final {
       bool with_overrides = true,
       const std::size_t batch_size =
           JsonValidation::k_default_shard_limit) const;
+
+  CallGraphStats compute_stats(std::size_t join_override_threshold) const;
+  void log_call_graph_stats(const Heuristics& heuristics) const;
 
  private:
   const Types& types_;

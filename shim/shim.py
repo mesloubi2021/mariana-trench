@@ -566,6 +566,13 @@ def _add_debug_arguments(parser: argparse.ArgumentParser) -> None:
         help="The logging verbosity.",
     )
     debug_arguments.add_argument(
+        "--gta-verbosity",
+        type=int,
+        default=0,
+        metavar="[0-10]",
+        help="The logging verbosity for global type analysis (GTA). Disabled by default (value=0)",
+    )
+    debug_arguments.add_argument(
         "--gdb", action="store_true", help="Run the analyzer inside gdb."
     )
     debug_arguments.add_argument(
@@ -599,6 +606,11 @@ def _add_debug_arguments(parser: argparse.ArgumentParser) -> None:
         help="Dump the call graph in `call_graph.json`.",
     )
     debug_arguments.add_argument(
+        "--dump-gta-call-graph",
+        action="store_true",
+        help="Dump the GTA (global type analysis) call graph in `gta_call_graph.json`.",
+    )
+    debug_arguments.add_argument(
         "--dump-dependencies",
         action="store_true",
         help="Dump the dependency graph in `dependencies.json`.",
@@ -621,7 +633,10 @@ def _add_debug_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _set_environment_variables(arguments: argparse.Namespace) -> None:
-    trace_settings = [f"MARIANA_TRENCH:{arguments.verbosity}"]
+    trace_settings = [
+        f"MARIANA_TRENCH:{arguments.verbosity}",
+        f"TYPE:{arguments.gta_verbosity}",
+    ]
     if "TRACE" in os.environ:
         trace_settings.insert(0, os.environ["TRACE"])
     os.environ["TRACE"] = ",".join(trace_settings)
@@ -764,6 +779,9 @@ def _get_command_options_json(
 
     if arguments.dump_call_graph:
         options["dump-call-graph"] = True
+
+    if arguments.dump_gta_call_graph:
+        options["dump-gta-call-graph"] = True
 
     if arguments.dump_dependencies:
         options["dump-dependencies"] = True

@@ -17,49 +17,31 @@ ForwardTaintEnvironment ForwardTaintEnvironment::initial() {
 }
 
 TaintTree ForwardTaintEnvironment::read(MemoryLocation* memory_location) const {
-  return taint_.get(memory_location->root()).read(memory_location->path());
+  return environment_.read(memory_location);
 }
 
 TaintTree ForwardTaintEnvironment::read(
     MemoryLocation* memory_location,
     const Path& path) const {
-  Path full_path = memory_location->path();
-  full_path.extend(path);
-
-  return taint_.get(memory_location->root()).read(full_path);
+  return environment_.read(memory_location, path);
 }
 
 TaintTree ForwardTaintEnvironment::read(
     const MemoryLocationsDomain& memory_locations) const {
-  TaintTree taint;
-  for (auto* memory_location : memory_locations.elements()) {
-    taint.join_with(read(memory_location));
-  }
-  return taint;
+  return environment_.read(memory_locations);
 }
 
 TaintTree ForwardTaintEnvironment::read(
     const MemoryLocationsDomain& memory_locations,
     const Path& path) const {
-  TaintTree taint;
-  for (auto* memory_location : memory_locations.elements()) {
-    taint.join_with(read(memory_location, path));
-  }
-
-  return taint;
+  return environment_.read(memory_locations, path);
 }
 
 void ForwardTaintEnvironment::write(
     MemoryLocation* memory_location,
     TaintTree taint,
     UpdateKind kind) {
-  taint_.update(
-      memory_location->root(),
-      [memory_location, &taint, kind](const TaintTree& tree) {
-        auto copy = tree;
-        copy.write(memory_location->path(), std::move(taint), kind);
-        return copy;
-      });
+  environment_.write(memory_location, Path{}, std::move(taint), kind);
 }
 
 void ForwardTaintEnvironment::write(
@@ -67,16 +49,7 @@ void ForwardTaintEnvironment::write(
     const Path& path,
     TaintTree taint,
     UpdateKind kind) {
-  Path full_path = memory_location->path();
-  full_path.extend(path);
-
-  taint_.update(
-      memory_location->root(),
-      [&full_path, &taint, kind](const TaintTree& tree) {
-        auto copy = tree;
-        copy.write(full_path, std::move(taint), kind);
-        return copy;
-      });
+  environment_.write(memory_location, path, std::move(taint), kind);
 }
 
 void ForwardTaintEnvironment::write(
@@ -84,16 +57,7 @@ void ForwardTaintEnvironment::write(
     const Path& path,
     Taint taint,
     UpdateKind kind) {
-  Path full_path = memory_location->path();
-  full_path.extend(path);
-
-  taint_.update(
-      memory_location->root(),
-      [&full_path, &taint, kind](const TaintTree& tree) {
-        auto copy = tree;
-        copy.write(full_path, std::move(taint), kind);
-        return copy;
-      });
+  write(memory_location, path, TaintTree{std::move(taint)}, kind);
 }
 
 void ForwardTaintEnvironment::write(
@@ -104,15 +68,7 @@ void ForwardTaintEnvironment::write(
     return;
   }
 
-  if (kind == UpdateKind::Strong && memory_locations.singleton() == nullptr) {
-    // In practice, only one of the memory location is affected, so we must
-    // treat this as a weak update, even if a strong update was requested.
-    kind = UpdateKind::Weak;
-  }
-
-  for (auto* memory_location : memory_locations.elements()) {
-    write(memory_location, taint, kind);
-  }
+  environment_.write(memory_locations, Path{}, std::move(taint), kind);
 }
 
 void ForwardTaintEnvironment::write(
@@ -131,15 +87,7 @@ void ForwardTaintEnvironment::write(
     return;
   }
 
-  if (kind == UpdateKind::Strong && memory_locations.singleton() == nullptr) {
-    // In practice, only one of the memory location is affected, so we must
-    // treat this as a weak update, even if a strong update was requested.
-    kind = UpdateKind::Weak;
-  }
-
-  for (auto* memory_location : memory_locations.elements()) {
-    write(memory_location, path, taint, kind);
-  }
+  environment_.write(memory_locations, path, std::move(taint), kind);
 }
 
 void ForwardTaintEnvironment::write(
@@ -147,25 +95,114 @@ void ForwardTaintEnvironment::write(
     const Path& path,
     Taint taint,
     UpdateKind kind) {
+  write(memory_locations, path, TaintTree{std::move(taint)}, kind);
+}
+
+TaintTree ForwardTaintEnvironment::deep_read(
+    const ResolvedAliasesMap& resolved_aliases,
+    MemoryLocation* memory_location) const {
+  auto taint_tree = environment_.deep_read(resolved_aliases, memory_location);
+
+  LOG(5,
+      "Deep read of memory location {} resolves to: {}",
+      show(memory_location),
+      taint_tree);
+
+  return taint_tree;
+}
+
+TaintTree ForwardTaintEnvironment::deep_read(
+    const ResolvedAliasesMap& resolved_aliases,
+    const MemoryLocationsDomain& memory_locations) const {
+  auto taint_tree = environment_.deep_read(resolved_aliases, memory_locations);
+
+  LOG(5,
+      "Deep read of memory location {} resolves to: {}",
+      memory_locations,
+      taint_tree);
+
+  return taint_tree;
+}
+
+TaintTree ForwardTaintEnvironment::deep_read(
+    const ResolvedAliasesMap& resolved_aliases,
+    const MemoryLocationsDomain& memory_locations,
+    const Path& path) const {
+  auto taint_tree =
+      environment_.deep_read(resolved_aliases, memory_locations, path);
+
+  LOG(5,
+      "Deep read of memory location {} at path {} resolves to: {}",
+      memory_locations,
+      path,
+      taint_tree);
+
+  return taint_tree;
+}
+
+void ForwardTaintEnvironment::deep_write(
+    const ResolvedAliasesMap& resolved_aliases,
+    MemoryLocation* memory_location,
+    TaintTree taint,
+    UpdateKind kind) {
+  environment_.deep_write(
+      resolved_aliases, memory_location, Path{}, std::move(taint), kind);
+}
+
+void ForwardTaintEnvironment::deep_write(
+    const ResolvedAliasesMap& resolved_aliases,
+    MemoryLocation* memory_location,
+    const Path& path,
+    TaintTree taint,
+    UpdateKind kind) {
+  environment_.deep_write(
+      resolved_aliases, memory_location, path, std::move(taint), kind);
+}
+
+void ForwardTaintEnvironment::deep_write(
+    const ResolvedAliasesMap& resolved_aliases,
+    const MemoryLocationsDomain& memory_locations,
+    TaintTree taint,
+    UpdateKind kind) {
   if (memory_locations.empty()) {
     return;
   }
 
-  if (kind == UpdateKind::Strong && memory_locations.singleton() == nullptr) {
-    // In practice, only one of the memory location is affected, so we must
-    // treat this as a weak update, even if a strong update was requested.
-    kind = UpdateKind::Weak;
+  environment_.deep_write(
+      resolved_aliases, memory_locations, Path{}, std::move(taint), kind);
+}
+
+void ForwardTaintEnvironment::deep_write(
+    const ResolvedAliasesMap& resolved_aliases,
+    const MemoryLocationsDomain& memory_locations,
+    Taint taint,
+    UpdateKind kind) {
+  environment_.deep_write(
+      resolved_aliases,
+      memory_locations,
+      Path{},
+      TaintTree(std::move(taint)),
+      kind);
+}
+
+void ForwardTaintEnvironment::deep_write(
+    const ResolvedAliasesMap& resolved_aliases,
+    const MemoryLocationsDomain& memory_locations,
+    const Path& path,
+    TaintTree taint,
+    UpdateKind kind) {
+  if (memory_locations.empty()) {
+    return;
   }
 
-  for (auto* memory_location : memory_locations.elements()) {
-    write(memory_location, path, taint, kind);
-  }
+  environment_.deep_write(
+      resolved_aliases, memory_locations, path, std::move(taint), kind);
 }
 
 std::ostream& operator<<(
     std::ostream& out,
     const ForwardTaintEnvironment& environment) {
-  return out << environment.taint_;
+  return out << environment.environment_;
 }
 
 } // namespace marianatrench

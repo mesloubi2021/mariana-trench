@@ -20,7 +20,34 @@
         "generations": [
           {
             "kind": "PutParcelable",
-            "port": "Argument(0)"
+            "port": "Argument(0)",
+            "via_type_of": [
+              {
+                "port": "Argument(2)"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "find": "methods",
+      "where": [
+        {
+          "constraint": "signature_match",
+          "parent": "Landroidx/browser/customtabs/CustomTabsIntent$Builder;",
+          "name": "build"
+        }
+      ],
+      "model": {
+        "sanitizers": [
+          {
+            "sanitize": "sources",
+            "kinds": [
+              {
+                "kind": "PutParcelable"
+              }
+            ]
           }
         ]
       }
@@ -46,12 +73,22 @@
         "generations": [
           {
             "kind": "PutParcelable",
-            "port": "Argument(0)"
+            "port": "Argument(0)",
+            "via_type_of": [
+              {
+                "port": "Argument(2)"
+              }
+            ]
           }
         ],
         "sources": [
           {
-            "kind": "PutParcelable"
+            "kind": "PutParcelable",
+            "via_type_of": [
+              {
+                "port": "Argument(2)"
+              }
+            ]
           }
         ]
       }
